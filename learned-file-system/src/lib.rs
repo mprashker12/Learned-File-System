@@ -1,21 +1,40 @@
+
+pub mod utils;
+
 use fuse::{Filesystem};
 use std::os::raw::c_int;
 use std::collections::BTreeSet;
+use crate::utils::block_file::BlockFile;
 
-mod utils;
 
 const FS_BLOCK_SIZE: u32 = 4096;
-const DISK_FD: i32 = 1; //TODO
 
-pub struct LearnedFileSystem {
-    /// Magic number to verify mounting of file-system
-    fs_magic: u32,
-    /// Block with inumber 0, maintains meta-data about file system
-    super_block: FsSuperBlock,
-    /// Block with inumber 1, maintains which blocks are free
-    bit_mask_block: BitMaskBlock,
-    /// Which block indices have not been allocated yet?
+
+pub struct LearnedFileSystem <BF : BlockFile> {
+    /// file descriptor for the disk
+    block_system: BF,
     free_block_indices: BTreeSet<usize>,
+    // fs_magic: u32,
+    // super_block: FsSuperBlock,
+    // bit_mask_block: BitMaskBlock,
+}
+
+impl <BF: BlockFile>  LearnedFileSystem<BF> {
+    pub fn new(block_system: BF) -> Self {
+        let free_block_indices = BTreeSet::new(); // TODO populate this with data
+        LearnedFileSystem {
+            block_system,
+            free_block_indices
+        }
+    }
+
+    pub fn first_free_block(&self) -> u32 {
+        let mut free_block_iter = self.free_block_indices.iter();
+        if let Some(first_free_index) = free_block_iter.next() {
+            return *first_free_index as u32;
+        }
+        panic!("Trying to find a free block when all blocks are full");
+    }
 }
 
 /// Block of the file system with inumber 0
@@ -82,7 +101,7 @@ impl From<&[u8]> for FsSuperBlock {
                         + (1 << 16)*(super_block_bytes[5] as u32)
                         + (1 << 8)*(super_block_bytes[6] as u32)
                         + (super_block_bytes[7] as u32);
-        
+
         let padding = [0u8; (FS_BLOCK_SIZE as usize - 8)];
 
         FsSuperBlock { magic, disk_size, padding }
@@ -91,23 +110,21 @@ impl From<&[u8]> for FsSuperBlock {
 
 
 
-impl Filesystem for LearnedFileSystem {
-
-    
+impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     fn init(&mut self, _req: &fuse::Request) -> Result<(), c_int> {
         let mut buf = [0 as u8; FS_BLOCK_SIZE as usize];
         let res = utils::block_read(&mut buf, FS_BLOCK_SIZE, 0, DISK_FD);
         if res.is_err() {return Err(-1);}
-        
+
         let super_block = FsSuperBlock::from(buf.as_slice());
         if super_block.magic != self.fs_magic {return Err(-1);}
-        
+
         self.super_block = super_block;
         self.bit_mask_block = BitMaskBlock::default();
         Ok(())
     }
 
-    fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
+    /*fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
 
     }
 
@@ -117,15 +134,5 @@ impl Filesystem for LearnedFileSystem {
 
     fn readdir(&mut self, _req: &fuse::Request, _ino: u64, _fh: u64, _offset: i64, reply: fuse::ReplyDirectory) {
         
-    }
-}
-
-impl LearnedFileSystem {
-    pub fn first_free_block(&self) -> u32 {
-        let mut free_block_iter = self.free_block_indices.iter();
-        if let Some(first_free_index) = free_block_iter.next() {
-            return *first_free_index as u32;
-        }
-        panic!("Trying to find a free block when all blocks are full");
-    }
+    }*/
 }
