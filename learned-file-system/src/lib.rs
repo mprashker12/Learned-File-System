@@ -58,38 +58,6 @@ pub struct FSINode {
     pointers: Vec<usize>,
 }
 
-/// Block of the file system with inumber 1
-/// Maintains which blocks are empty
-pub struct BitMaskBlock<> {
-    bit_mask: [u8; FS_BLOCK_SIZE as usize],
-}
-
-impl Default for BitMaskBlock {
-    fn default() -> Self {
-        let bit_mask = [0u8; FS_BLOCK_SIZE as usize];
-        BitMaskBlock { bit_mask }
-    }
-}
-
-impl BitMaskBlock {
-
-    pub fn set_bit(&mut self, index: u32) {
-        if index >= 8*FS_BLOCK_SIZE {
-            panic!("Trying to set bit {}, which is larger than {}", index, 8*FS_BLOCK_SIZE);
-        }
-        let byte_index = index/8;
-        let byte_offset = index%8;
-        self.bit_mask[byte_index as usize] &= 1 << byte_offset;
-    }
-
-    pub fn clear_bit(&mut self, index: u32) {
-        if index >= 8*FS_BLOCK_SIZE {
-            panic!("Trying to clear bit {}, which is larger than {}", index, 8*FS_BLOCK_SIZE);
-        }
-        let byte_index = index/8;
-        self.bit_mask[byte_index as usize] = 0;
-    }
-}
 
 impl From<&[u8]> for FsSuperBlock {
     fn from(super_block_bytes: &[u8]) -> Self {
