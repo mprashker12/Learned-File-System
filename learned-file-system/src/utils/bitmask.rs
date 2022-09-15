@@ -30,6 +30,7 @@ impl BitMaskBlock {
             panic!("Trying to clear bit {}, which is larger than {}", index, 8*FS_BLOCK_SIZE);
         }
         let byte_index = index/8;
-        self.bit_mask[byte_index as usize] = 0;
+        let byte_offset = index%8;
+        self.bit_mask[byte_index as usize] &= 0 << byte_offset;
     }
 }
