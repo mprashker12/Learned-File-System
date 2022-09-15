@@ -8,6 +8,7 @@ use crate::utils::block_file::BlockFile;
 
 
 const FS_BLOCK_SIZE: u32 = 4096;
+const FS_MAGIC_NUM: u32 = 0; // TODO
 
 
 pub struct LearnedFileSystem <BF : BlockFile> {
@@ -112,15 +113,14 @@ impl From<&[u8]> for FsSuperBlock {
 
 impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     fn init(&mut self, _req: &fuse::Request) -> Result<(), c_int> {
-        let mut buf = [0 as u8; FS_BLOCK_SIZE as usize];
-        let res = utils::block_read(&mut buf, FS_BLOCK_SIZE, 0, DISK_FD);
-        if res.is_err() {return Err(-1);}
+        let super_block_data = self.block_system.block_read(0).map_err(|e| -1)?;
+        let super_block = FsSuperBlock::from(super_block_data.as_slice());
 
-        let super_block = FsSuperBlock::from(buf.as_slice());
-        if super_block.magic != self.fs_magic {return Err(-1);}
+        if super_block.magic != FS_MAGIC_NUM {return Err(-1)};
+        // super_block.disk_size
 
-        self.super_block = super_block;
-        self.bit_mask_block = BitMaskBlock::default();
+        // self.super_block = super_block;
+        // self.bit_mask_block = BitMaskBlock::default();
         Ok(())
     }
 
