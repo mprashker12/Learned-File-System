@@ -1,6 +1,5 @@
 use fuse::{Filesystem};
 use std::os::raw::c_int;
-use std::io::{Read, Write};
 use std::collections::BTreeSet;
 
 mod utils;
@@ -45,19 +44,14 @@ pub struct BitMaskBlock<> {
     bit_mask: [u8; FS_BLOCK_SIZE as usize],
 }
 
-impl BitMaskBlock {
-
-    pub fn new() -> Self {
+impl Default for BitMaskBlock {
+    fn default() -> Self {
         let bit_mask = [0u8; FS_BLOCK_SIZE as usize];
-        
-        let mut free_block_indices = BTreeSet::<usize>::new();
-        for i in 0..8*FS_BLOCK_SIZE {
-            free_block_indices.insert(i as usize);
-        }
-        BitMaskBlock {
-            bit_mask,
-        }
+        BitMaskBlock { bit_mask }
     }
+}
+
+impl BitMaskBlock {
 
     pub fn set_bit(&mut self, index: u32) {
         if index >= 8*FS_BLOCK_SIZE {
@@ -109,7 +103,7 @@ impl Filesystem for LearnedFileSystem {
         if super_block.magic != self.fs_magic {return Err(-1);}
         
         self.super_block = super_block;
-        self.bit_mask_block = BitMaskBlock::new();
+        self.bit_mask_block = BitMaskBlock::default();
         Ok(())
     }
 
