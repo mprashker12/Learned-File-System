@@ -1,0 +1,18 @@
+# if line[0] = '$', then variable assignment dict[sym] = int(val,0)
+#
+$t1 1565283152
+$t2 1565283167
+$root 0
+$user 500
+$d_rwx  040777
+$f_rwx 0100777
+$f_rw  0100666
+$f_urw 0100600
+
+size 400
+
+# / 4096 
+
+# type inode name uid gid mode ctime mtime size blocks [entries]
+
+dir 2 / $root $root $d_rwx $t1 $t2 4096 399 -nothing -nothing

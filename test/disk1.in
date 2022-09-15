@@ -1,0 +1,57 @@
+# if line[0] = '$', then variable assignment dict[sym] = int(val,0)
+#
+$t1 1565283152
+$t2 1565283167
+$root 0
+$user 500
+$d_rwx  040777
+$f_rwx 0100777
+$f_rw  0100666
+$f_urw 0100600
+
+size 400
+
+# / 4096 
+# /file.1k 1000
+# /file.10 10
+# /dir-with-long-name
+# /dir2 8192
+# /dir3/subdir
+# /dir2/twenty-seven-byte-file-name 1000
+# /dir3/subdir/file.4k- 4095
+# /dir2/file.4k+ 4098
+# /dir3/subdir/file.8k- 8190
+# /file.8k+ 8195
+# /dir3/file.12k- 12287
+# /dir3/subdir/file.12k 12288
+# /dir-with-long-name/file.12k+ 12289
+
+# type inode name uid gid mode ctime mtime size blocks [entries]
+
+dir 2 / $root $root $d_rwx $t1 $t2 4096 399 -nothing -nothing file.1k,389 file.10,268 dir-with-long-name,253 dir2,213 dir3,238 file.8k+,59
+
+file 389 /file.1k $user $user $f_rw $t1 $t1 1000 365
+file 268 /file.10 $user $user $f_rw $t1 $t2 10 122
+file 59 /file.8k+ $user $user $f_rw $t1 $t2 8195 65,363,326
+
+dir 253 /dir-with-long-name $root $root $d_rwx $t1 $t2 4096 29 file.12k+,327 -nothing -nothing
+file 327 /dir-with-long-name/file.12k+ $root $user $f_rw $t1 $t2 12289 233,116,311,109
+dir 213 /dir2 $user $user $d_rwx $t1 $t2 8192 270,244 twenty-seven-byte-file-name,55 file.4k+,139
+file 55 /dir2/twenty-seven-byte-file-name $user $user $f_rw $t1 $t2 1000 189
+file 139 /dir2/file.4k+ $user $user $f_rwx $t1 $t2 4098 295,229
+dir 238 /dir3 $root $user $d_rwx $t1 $t2 4096 136 subdir,338 file.12k-,146
+file 146 /dir3/file.12k- $root $user $f_rwx $t1 $t2 12287 22,85,266,26
+dir 338 /dir3/subdir $root $user $d_rwx $t1 $t2 4096 339 file.4k-,188 file.8k-,21 file.12k,71
+file 188 /dir3/subdir/file.4k- $user $user $f_rw $t1 $t2 4095 51
+file 21 /dir3/subdir/file.8k- $user $user $f_rw $t1 $t2 8190 102,297
+file 71 /dir3/subdir/file.12k $user $user $f_rw $t1 $t2 12288 332,151,283
+
+# CRCs (using zlib.crc32(bytes) & 0xffffffff) and lengths should be:
+#
+# 1786485602 1000 /file.1k
+# 855202508 10 /file.10
+# 4101348955 12289 /dir-with-long-name/file.12k+
+# 2575367502 1000 /dir2/twenty-seven-byte-file-name
+# 799580753 4098 /dir2/file.4k+
+# 2954788945 12287 /dir3/file.12k-
+# 2112223143 8195 /file.8k+
