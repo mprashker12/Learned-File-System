@@ -1,14 +1,20 @@
+#![feature(slice_as_chunks)]
+#![feature(int_roundings)]
+
+extern crate core;
 
 pub mod utils;
 
-use fuse::{Filesystem};
+use time::Timespec;
+use fuse::{FileAttr, Filesystem};
 use std::os::raw::c_int;
 use std::collections::BTreeSet;
+use fuse::FileType::{Directory, RegularFile};
 use crate::utils::block_file::BlockFile;
 
 
 const FS_BLOCK_SIZE: u32 = 4096;
-const FS_MAGIC_NUM: u32 = 0; // TODO
+const FS_MAGIC_NUM: u32 = 0x30303635;
 
 /// Block of the file system with inumber 0
 /// Records meta-data about the entire file system
@@ -16,8 +22,8 @@ pub struct FsSuperBlock {
     magic: u32,
     /// How many blocks is the entire disk?
     disk_size: u32,
-    /// Dummy bytes to make this struct the size of a block
-    padding: [u8; (FS_BLOCK_SIZE as usize - 8)],
+    // Dummy bytes to make this struct the size of a block
+    //padding: [u8; (FS_BLOCK_SIZE as usize - 8)],
 }
 
 pub struct FSINode {
@@ -27,8 +33,10 @@ pub struct FSINode {
     ctime: u32,
     mtime: u32,
     size: u32,
-    pointers: [u32; ((FS_BLOCK_SIZE - 20)/4) as usize],
+    pointers: Vec<u32> // [u32; ((FS_BLOCK_SIZE - 20)/4) as usize],
 }
+
+
 
 pub struct DirectoryBlock {
     directory_entries: [DirectoryEntry; (FS_BLOCK_SIZE/4) as usize],
@@ -64,11 +72,19 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
     }
 }
 
+fn slice_to_four_bytes(arr: &[u8]) -> [u8;4] {
+    [arr[0], arr[1], arr[2], arr[3]]
+}
 
+fn slice_to_two_bytes(arr: &[u8]) -> [u8;2] {
+    [arr[0], arr[1]]
+}
 
 impl From<&[u8]> for FsSuperBlock {
     fn from(super_block_bytes: &[u8]) -> Self {
-        let magic = (1 << 24)*(super_block_bytes[0] as u32)
+        let magic = u32::from_le_bytes(slice_to_four_bytes(&super_block_bytes[0..4]));
+        let disk_size = u32::from_le_bytes(slice_to_four_bytes(&super_block_bytes[4..8]));
+        /*let magic = (1 << 24)*(super_block_bytes[0] as u32)
                         + (1 << 16)*(super_block_bytes[1] as u32)
                         + (1 << 8)*(super_block_bytes[2] as u32)
                         + (super_block_bytes[3] as u32);
@@ -78,18 +94,65 @@ impl From<&[u8]> for FsSuperBlock {
                         + (1 << 16)*(super_block_bytes[5] as u32)
                         + (1 << 8)*(super_block_bytes[6] as u32)
                         + (super_block_bytes[7] as u32);
+        */
+        //let padding = [0u8; (FS_BLOCK_SIZE as usize - 8)];
 
-        let padding = [0u8; (FS_BLOCK_SIZE as usize - 8)];
-
-        FsSuperBlock { magic, disk_size, padding }
+        FsSuperBlock { magic, disk_size }
     }
 }
 
-// impl From<&[u8]> for FSINode {
-//     fn from(_: &[u8]) -> Self {
-//         //TODO
-//     }
-// }
+impl From<&[u8]> for FSINode {
+    fn from(inode_bytes: &[u8]) -> Self {
+
+        let uid =  u16::from_le_bytes(slice_to_two_bytes(&inode_bytes[0..2]));
+        let gid =  u16::from_le_bytes(slice_to_two_bytes(&inode_bytes[2..4]));
+        let mode = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[4..8]));
+        let ctime = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[8..12]));
+        let mtime = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[12..16]));
+        let size = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[16..20]));
+
+        let pointers = inode_bytes[20..].as_chunks::<4>().0.into_iter()
+            .map(|chunk| u32::from_le_bytes(*chunk))
+            .collect();
+
+        return FSINode{
+            uid, gid, mode, ctime, mtime, size, pointers,
+        }
+    }
+}
+
+fn time_to_timespec(time: u32) -> Timespec{
+    Timespec{
+        sec: time as i64,
+        nsec: 0
+    }
+}
+
+impl FSINode{
+    fn to_fileattr(&self, node_num: u64) -> FileAttr {
+        let dir_mask = 0o40000;
+
+        let ftype = if self.mode & dir_mask != 0 { Directory } else { RegularFile };
+
+        FileAttr{
+            ino: node_num,
+            uid: self.uid as u32,
+            gid: self.gid as u32,
+            mtime: time_to_timespec(self.mtime),
+            ctime: time_to_timespec(self.ctime),
+            crtime: time_to_timespec(self.ctime),
+            atime: time_to_timespec(self.mtime),
+            size: self.size as u64,
+            blocks: (self.size as u64).div_ceil(FS_BLOCK_SIZE as u64),
+            nlink: 1,
+            rdev: 0,
+            flags: 0,
+            kind: ftype,
+            perm: self.mode as u16
+        }
+    }
+}
+
 
 
 
@@ -105,20 +168,29 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         // self.bit_mask_block = BitMaskBlock::default();
         Ok(())
     }
-
+/*
     fn lookup(&mut self, _req: &fuse::Request, _parent: u64, _name: &std::ffi::OsStr, reply: fuse::ReplyEntry) {
         
     }
-
-
-    /*fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
-        
-    }
+ */
 
     fn getattr(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyAttr) {
-        
+        let _ino = if _ino == 1 {2} else {_ino};
+        let block_info = FSINode::from(self.block_system.block_read(_ino as usize).unwrap().as_slice());
+
+        reply.attr(&time::get_time(), &block_info.to_fileattr(_ino))
     }
 
+    fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
+        let super_block = FsSuperBlock::from(self.block_system.block_read(0).unwrap().as_slice());
+
+        reply.statfs((super_block.disk_size - 2) as u64, self.free_block_indices.len() as u64,
+                     self.free_block_indices.len() as u64, (super_block.disk_size - 2) as u64,
+                     self.free_block_indices.len() as u64, FS_BLOCK_SIZE, 27,
+                     FS_BLOCK_SIZE)
+    }
+
+    /*
     fn readdir(&mut self, _req: &fuse::Request, _ino: u64, _fh: u64, _offset: i64, reply: fuse::ReplyDirectory) {
         
     }*/
