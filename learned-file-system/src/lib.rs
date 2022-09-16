@@ -20,10 +20,7 @@ const FS_MAGIC_NUM: u32 = 0x30303635;
 /// Records meta-data about the entire file system
 pub struct FsSuperBlock {
     magic: u32,
-    /// How many blocks is the entire disk?
     disk_size: u32,
-    // Dummy bytes to make this struct the size of a block
-    //padding: [u8; (FS_BLOCK_SIZE as usize - 8)],
 }
 
 pub struct FSINode {
@@ -56,7 +53,10 @@ pub struct LearnedFileSystem <BF : BlockFile> {
 
 impl <BF: BlockFile>  LearnedFileSystem<BF> {
     pub fn new(block_system: BF) -> Self {
-        let free_block_indices = BTreeSet::new(); // TODO populate this with data
+        let mut free_block_indices = BTreeSet::new(); // TODO populate this with data
+        for index in 2..block_system.num_blocks() {
+            free_block_indices.insert(index);
+        }
         LearnedFileSystem {
             block_system,
             free_block_indices
@@ -84,26 +84,12 @@ impl From<&[u8]> for FsSuperBlock {
     fn from(super_block_bytes: &[u8]) -> Self {
         let magic = u32::from_le_bytes(slice_to_four_bytes(&super_block_bytes[0..4]));
         let disk_size = u32::from_le_bytes(slice_to_four_bytes(&super_block_bytes[4..8]));
-        /*let magic = (1 << 24)*(super_block_bytes[0] as u32)
-                        + (1 << 16)*(super_block_bytes[1] as u32)
-                        + (1 << 8)*(super_block_bytes[2] as u32)
-                        + (super_block_bytes[3] as u32);
-
-    
-        let disk_size = (1 << 24)*(super_block_bytes[4] as u32)
-                        + (1 << 16)*(super_block_bytes[5] as u32)
-                        + (1 << 8)*(super_block_bytes[6] as u32)
-                        + (super_block_bytes[7] as u32);
-        */
-        //let padding = [0u8; (FS_BLOCK_SIZE as usize - 8)];
-
         FsSuperBlock { magic, disk_size }
     }
 }
 
 impl From<&[u8]> for FSINode {
     fn from(inode_bytes: &[u8]) -> Self {
-
         let uid =  u16::from_le_bytes(slice_to_two_bytes(&inode_bytes[0..2]));
         let gid =  u16::from_le_bytes(slice_to_two_bytes(&inode_bytes[2..4]));
         let mode = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[4..8]));
@@ -111,11 +97,11 @@ impl From<&[u8]> for FSINode {
         let mtime = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[12..16]));
         let size = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[16..20]));
 
-        let pointers = inode_bytes[20..].as_chunks::<4>().0.into_iter()
+        let pointers = inode_bytes[20..].as_chunks::<4>().0.iter()
             .map(|chunk| u32::from_le_bytes(*chunk))
             .collect();
 
-        return FSINode{
+        FSINode{
             uid, gid, mode, ctime, mtime, size, pointers,
         }
     }
@@ -155,10 +141,9 @@ impl FSINode{
 
 
 
-
 impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     fn init(&mut self, _req: &fuse::Request) -> Result<(), c_int> {
-        let super_block_data = self.block_system.block_read(0).map_err(|e| -1)?;
+        let super_block_data = self.block_system.block_read(0).map_err(|_| -1)?;
         let super_block = FsSuperBlock::from(super_block_data.as_slice());
 
         if super_block.magic != FS_MAGIC_NUM {return Err(-1)};

@@ -2,8 +2,10 @@ use std::io::{Read, Write, Seek, SeekFrom};
 use std::os::unix::fs::FileExt;
 use std::fs::File;
 
+
 pub trait BlockFile {
     fn block_size(&self) -> usize;
+    fn num_blocks(&self) -> usize;
 
     fn block_read_in_place(&self, buf: &mut [u8], block_address: usize) -> std::io::Result<usize>;
     fn block_read(&self, block_address: usize) -> std::io::Result<Vec<u8>> {
@@ -19,20 +21,25 @@ pub trait BlockFile {
 
 pub struct BlockFileWrapper<F : FileExt>{
     block_size: usize,
+    num_blocks: usize,
     file: F
 }
 
 impl <F> BlockFileWrapper<F> where F : FileExt {
-    pub fn new(block_size: usize, file: F) -> Self{
+    pub fn new(block_size: usize, num_blocks: usize, file: F) -> Self{
         BlockFileWrapper{
-            block_size, file
+            block_size, num_blocks, file
         }
     }
 }
 
 impl <F> BlockFile for BlockFileWrapper<F> where F : FileExt {
     fn block_size(&self) -> usize {
-        return self.block_size
+        self.block_size
+    }
+
+    fn num_blocks(&self) -> usize {
+        self.num_blocks
     }
 
     fn block_read_in_place(&self, mut buf: &mut [u8], block_address: usize) -> std::io::Result<usize> {
