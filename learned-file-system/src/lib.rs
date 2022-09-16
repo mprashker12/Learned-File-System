@@ -10,14 +10,30 @@ use crate::utils::block_file::BlockFile;
 const FS_BLOCK_SIZE: u32 = 4096;
 const FS_MAGIC_NUM: u32 = 0; // TODO
 
+/// Block of the file system with inumber 0
+/// Records meta-data about the entire file system
+pub struct FsSuperBlock {
+    magic: u32,
+    /// How many blocks is the entire disk?
+    disk_size: u32,
+    /// Dummy bytes to make this struct the size of a block
+    padding: [u8; (FS_BLOCK_SIZE as usize - 8)],
+}
+
+pub struct FSINode {
+    uid: u16,
+    gid: u16,
+    mode: u32,
+    ctime: u32,
+    mtime: u32,
+    size: u32,
+    pointers: [u32; ((FS_BLOCK_SIZE - 20)/4) as usize],
+}
+
 
 pub struct LearnedFileSystem <BF : BlockFile> {
-    /// file descriptor for the disk
     block_system: BF,
     free_block_indices: BTreeSet<usize>,
-    // fs_magic: u32,
-    // super_block: FsSuperBlock,
-    // bit_mask_block: BitMaskBlock,
 }
 
 impl <BF: BlockFile>  LearnedFileSystem<BF> {
@@ -38,25 +54,6 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
     }
 }
 
-/// Block of the file system with inumber 0
-/// Records meta-data about the entire file system
-pub struct FsSuperBlock {
-    magic: u32,
-    /// How many blocks is the entire disk?
-    disk_size: u32,
-    /// Dummy bytes to make this struct the size of a block
-    padding: [u8; (FS_BLOCK_SIZE as usize - 8)],
-}
-
-pub struct FSINode {
-    uid: u16,
-    gid: u16,
-    mode: u32,
-    ctime: u32,
-    mtime: u32,
-    size: u32,
-    pointers: Vec<usize>,
-}
 
 
 impl From<&[u8]> for FsSuperBlock {
@@ -77,6 +74,12 @@ impl From<&[u8]> for FsSuperBlock {
     }
 }
 
+// impl From<&[u8]> for FSINode {
+//     fn from(_: &[u8]) -> Self {
+//         //TODO
+//     }
+// }
+
 
 
 impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
@@ -92,8 +95,9 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         Ok(())
     }
 
-    /*fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
 
+    /*fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
+        
     }
 
     fn getattr(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyAttr) {

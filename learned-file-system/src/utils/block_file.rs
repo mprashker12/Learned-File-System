@@ -12,6 +12,8 @@ pub trait BlockFile {
         Ok(output)
     }
 
+    
+
     fn block_write(&mut self, buf: &[u8], block_address: usize) -> std::io::Result<usize>;
 }
 
