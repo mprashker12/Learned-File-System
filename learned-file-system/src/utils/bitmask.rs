@@ -1,6 +1,5 @@
 const FS_BLOCK_SIZE: u32 = 4096; // TODO make this a runtime value, or maybe const generic?
 
-
 /// Block of the file system with inumber 1
 /// Maintains which blocks are empty
 pub struct BitMaskBlock<> {
