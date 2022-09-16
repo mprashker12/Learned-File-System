@@ -30,6 +30,16 @@ pub struct FSINode {
     pointers: [u32; ((FS_BLOCK_SIZE - 20)/4) as usize],
 }
 
+pub struct DirectoryBlock {
+    directory_entries: [DirectoryEntry; (FS_BLOCK_SIZE/4) as usize],
+}
+
+pub struct DirectoryEntry {
+    valid: bool,
+    inode_ptr: u32,
+    name: [char; 28],
+}
+
 
 pub struct LearnedFileSystem <BF : BlockFile> {
     block_system: BF,
@@ -63,6 +73,7 @@ impl From<&[u8]> for FsSuperBlock {
                         + (1 << 8)*(super_block_bytes[2] as u32)
                         + (super_block_bytes[3] as u32);
 
+    
         let disk_size = (1 << 24)*(super_block_bytes[4] as u32)
                         + (1 << 16)*(super_block_bytes[5] as u32)
                         + (1 << 8)*(super_block_bytes[6] as u32)
@@ -93,6 +104,10 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         // self.super_block = super_block;
         // self.bit_mask_block = BitMaskBlock::default();
         Ok(())
+    }
+
+    fn lookup(&mut self, _req: &fuse::Request, _parent: u64, _name: &std::ffi::OsStr, reply: fuse::ReplyEntry) {
+        
     }
 
 
