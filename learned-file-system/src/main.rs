@@ -22,8 +22,7 @@ fn main() {
 
     let image_name = args.get(2).unwrap();
     let image = File::open(image_name).unwrap();
-    let num_blocks = 1000; //TODO
-    let block_device = BlockFileWrapper::new(BLOCK_SIZE, num_blocks, image);
+    let block_device = BlockFileWrapper::new(BLOCK_SIZE, image);
 
     let mountpoint = args.get(3).unwrap();
 

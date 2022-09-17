@@ -19,21 +19,23 @@ pub trait BlockFile {
     fn block_write(&mut self, buf: &[u8], block_address: usize) -> std::io::Result<usize>;
 }
 
-pub struct BlockFileWrapper<F : FileExt>{
+pub struct BlockFileWrapper{
     block_size: usize,
     num_blocks: usize,
-    file: F
+    file: File
 }
 
-impl <F> BlockFileWrapper<F> where F : FileExt {
-    pub fn new(block_size: usize, num_blocks: usize, file: F) -> Self{
-        BlockFileWrapper{
+impl BlockFileWrapper {
+    pub fn new(block_size: usize, file: File) -> Self{
+        let fsize = file.metadata().unwrap().len() as usize;
+        let num_blocks = fsize.div_ceil(block_size);
+        BlockFileWrapper {
             block_size, num_blocks, file
         }
     }
 }
 
-impl <F> BlockFile for BlockFileWrapper<F> where F : FileExt {
+impl BlockFile for BlockFileWrapper {
     fn block_size(&self) -> usize {
         self.block_size
     }
