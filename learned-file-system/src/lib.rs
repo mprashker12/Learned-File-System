@@ -57,6 +57,31 @@ pub struct LearnedFileSystem <BF : BlockFile> {
     bit_mask_block_index: usize,
 }
 
+impl FSINode{
+    fn to_fileattr(&self, node_num: u64) -> FileAttr {
+        let dir_mask = 0o40000;
+
+        let ftype = if self.mode & dir_mask != 0 { Directory } else { RegularFile };
+
+        FileAttr{
+            ino: node_num,
+            uid: self.uid as u32,
+            gid: self.gid as u32,
+            mtime: time_to_timespec(self.mtime),
+            ctime: time_to_timespec(self.ctime),
+            crtime: time_to_timespec(self.ctime),
+            atime: time_to_timespec(self.mtime),
+            size: self.size as u64,
+            blocks: (self.size as u64).div_ceil(FS_BLOCK_SIZE as u64),
+            nlink: 1,
+            rdev: 0,
+            flags: 0,
+            kind: ftype,
+            perm: self.mode as u16
+        }
+    }
+}
+
 impl <BF: BlockFile>  LearnedFileSystem<BF> {
     pub fn new(block_system: BF) -> Self {
         let mut free_block_indices = BTreeSet::new();
@@ -71,15 +96,23 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
         }
     }
 
-    pub fn free_block(&mut self, block_index: usize) -> bool {
-        if self.free_block_indices.contains(&block_index) {return false;}
+     /// Read Bitmask block from disk, clear all bits given, and write bitmask
+    /// block back to disk
+    pub fn free_blocks(&mut self, block_indices: Vec<usize>) -> bool {
+        for block_index in block_indices.iter() {
+            if self.free_block_indices.contains(block_index) {return false;}
+        }
         let mut bit_mask_block = BitMaskBlock::from(
             self.block_system.block_read(self.bit_mask_block_index).unwrap().as_slice()
         );
-        bit_mask_block.clear_bit(block_index as u32);
+        for block_index in block_indices.iter() {
+            bit_mask_block.clear_bit(*block_index as u32);
+        }
         let res = self.block_system.block_write(&bit_mask_block.bit_mask.clone(), self.bit_mask_block_index);
         if res.is_err() || res.unwrap() != FS_BLOCK_SIZE {return false;}
-        self.free_block_indices.insert(block_index);
+        for block_index in block_indices.iter() {
+            self.free_block_indices.insert(*block_index);
+        }
         true
     }
 
@@ -142,124 +175,7 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
 
 }
 
-fn slice_to_four_bytes(arr: &[u8]) -> [u8;4] {
-    [arr[0], arr[1], arr[2], arr[3]]
-}
-
-fn slice_to_two_bytes(arr: &[u8]) -> [u8;2] {
-    [arr[0], arr[1]]
-}
-
-impl From<&[u8]> for FsSuperBlock {
-    fn from(super_block_bytes: &[u8]) -> Self {
-        let magic = u32::from_le_bytes(slice_to_four_bytes(&super_block_bytes[0..4]));
-        let disk_size = u32::from_le_bytes(slice_to_four_bytes(&super_block_bytes[4..8]));
-        FsSuperBlock { magic, disk_size }
-    }
-}
-
-impl From<&[u8]> for BitMaskBlock {
-    fn from(bit_mask_bytes: &[u8]) -> Self {
-        let mut bit_mask = [0u8; FS_BLOCK_SIZE];
-        for (index, byte) in bit_mask_bytes.iter().enumerate() {
-            bit_mask[index] = *byte;
-        }
-        BitMaskBlock {
-            bit_mask
-        }
-    }
-}
-
-impl From<&[u8]> for FSINode {
-    fn from(inode_bytes: &[u8]) -> Self {
-        let uid =  u16::from_le_bytes(slice_to_two_bytes(&inode_bytes[0..2]));
-        let gid =  u16::from_le_bytes(slice_to_two_bytes(&inode_bytes[2..4]));
-        let mode = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[4..8]));
-        let ctime = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[8..12]));
-        let mtime = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[12..16]));
-        let size = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[16..20]));
-
-        let pointers = inode_bytes[20..].as_chunks::<4>().0.iter()
-            .map(|chunk| u32::from_le_bytes(*chunk))
-            .collect();
-
-        FSINode{
-            uid, gid, mode, ctime, mtime, size, pointers,
-        }
-    }
-}
-
-impl From<&[u8]> for DirectoryEntry{
-    fn from(dirent: &[u8]) -> Self {
-        let valid = dirent[0] & 0x80 != 0;
-        let inode_ptr = u32::from_le_bytes(slice_to_four_bytes(&dirent[0..4])) & 0x7FFFFFFF;
-        let name_nonzero: Vec<NonZeroU8> = dirent[4..32].iter().map_while(|ch| NonZeroU8::new(*ch)).collect();
-        let name = CString::from(name_nonzero);
-        DirectoryEntry{
-            valid, inode_ptr, name
-        }
-    }
-}
-
-fn time_to_timespec(time: u32) -> Timespec{
-    Timespec{
-        sec: time as i64,
-        nsec: 0
-    }
-}
-
-impl FSINode{
-    fn to_fileattr(&self, node_num: u64) -> FileAttr {
-        let dir_mask = 0o40000;
-
-        let ftype = if self.mode & dir_mask != 0 { Directory } else { RegularFile };
-
-        FileAttr{
-            ino: node_num,
-            uid: self.uid as u32,
-            gid: self.gid as u32,
-            mtime: time_to_timespec(self.mtime),
-            ctime: time_to_timespec(self.ctime),
-            crtime: time_to_timespec(self.ctime),
-            atime: time_to_timespec(self.mtime),
-            size: self.size as u64,
-            blocks: (self.size as u64).div_ceil(FS_BLOCK_SIZE as u64),
-            nlink: 1,
-            rdev: 0,
-            flags: 0,
-            kind: ftype,
-            perm: self.mode as u16
-        }
-    }
-}
-
-fn in_one_sec() -> Timespec{
-    time::get_time().add(Duration::seconds(1))
-}
-
-impl<BF: BlockFile> LearnedFileSystem<BF> {
-    /// Read Bitmask block from disk, clear all bits given, and write bitmask
-    /// block back to disk
-    pub fn free_blocks(&mut self, block_indices: Vec<usize>) -> bool {
-        for block_index in block_indices.iter() {
-            if self.free_block_indices.contains(block_index) {return false;}
-        }
-        let mut bit_mask_block = BitMaskBlock::from(
-            self.block_system.block_read(self.bit_mask_block_index).unwrap().as_slice()
-        );
-        for block_index in block_indices.iter() {
-            bit_mask_block.clear_bit(*block_index as u32);
-        }
-        let res = self.block_system.block_write(&bit_mask_block.bit_mask.clone(), self.bit_mask_block_index);
-        if res.is_err() || res.unwrap() != FS_BLOCK_SIZE {return false;}
-        for block_index in block_indices.iter() {
-            self.free_block_indices.insert(*block_index);
-        }
-        true
-    }
-}
-
-
+//Main Implementations of the File System for LearnedFileSystem
 
 impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     fn init(&mut self, _req: &fuse::Request) -> Result<(), c_int> {
@@ -312,6 +228,6 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         reply.statfs((super_block.disk_size - 2) as u64, self.free_block_indices.len() as u64,
                      self.free_block_indices.len() as u64, (super_block.disk_size - 2) as u64,
                      self.free_block_indices.len() as u64, FS_BLOCK_SIZE as u32, 27,
-                     FS_BLOCK_SIZE as u32)
+                     FS_BLOCK_SIZE);
     }
 }
