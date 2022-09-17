@@ -1,19 +1,21 @@
 #![feature(slice_as_chunks)]
 #![feature(int_roundings)]
 
-extern crate core;
 
 pub mod utils;
 
 use time::Timespec;
-use fuse::{FileAttr, Filesystem};
+use fuse::{FileAttr, Filesystem, FileType};
 use std::os::raw::c_int;
 use std::collections::BTreeSet;
+use std::ffi::{CStr, CString, OsString};
+use std::num::NonZeroU8;
+use std::ops::Deref;
 use fuse::FileType::{Directory, RegularFile};
 use crate::utils::block_file::BlockFile;
 
 
-const FS_BLOCK_SIZE: u32 = 4096;
+const FS_BLOCK_SIZE: usize = 4096;
 const FS_MAGIC_NUM: u32 = 0x30303635;
 
 /// Block of the file system with inumber 0
@@ -36,13 +38,13 @@ pub struct FSINode {
 
 
 pub struct DirectoryBlock {
-    directory_entries: [DirectoryEntry; (FS_BLOCK_SIZE/4) as usize],
+    directory_entries: [DirectoryEntry; (FS_BLOCK_SIZE/4)],
 }
 
 pub struct DirectoryEntry {
     valid: bool,
     inode_ptr: u32,
-    name: [char; 28],
+    name: CString,
 }
 
 
@@ -70,6 +72,56 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
         }
         panic!("Trying to find a free block when all blocks are full");
     }
+
+    fn read_file_chunk(&self, file: &FSINode, block_num_in_file: usize, offset: usize, dest: &mut [u8]){
+        let disk_blknum = file.pointers[block_num_in_file] as usize;
+
+        if offset == 0 && dest.len() == self.block_system.block_size() {
+            self.block_system.block_read_in_place(dest, disk_blknum).unwrap();
+        }
+
+        if offset + dest.len() > FS_BLOCK_SIZE {
+            panic!("Tried reading off end of file chunk");
+        }
+        let blk = self.block_system.block_read(disk_blknum).unwrap();
+        dest.copy_from_slice(&blk[offset..(offset+dest.len())])
+    }
+
+    fn read_file_bytes_in_place(&self, file: &FSINode, offset: usize, dest: &mut [u8]) -> usize {
+        let len = if (dest.len() + offset) > file.size as usize {
+            file.size as usize - offset
+        } else {
+            dest.len()
+        };
+
+        let mut file_ptr = offset;
+        let mut total_num_read = 0;
+
+        while total_num_read < len {
+            let block_num = file_ptr / FS_BLOCK_SIZE;
+            let block_offset = file_ptr % FS_BLOCK_SIZE;
+
+            let read_length = if (FS_BLOCK_SIZE - block_offset) > (len - total_num_read) {
+                len - total_num_read
+            } else {
+                FS_BLOCK_SIZE - block_offset
+            };
+
+            self.read_file_chunk(file, block_num, block_offset, &mut dest[total_num_read..(total_num_read + read_length)]);
+            total_num_read += read_length;
+            file_ptr += read_length;
+        }
+
+        total_num_read
+    }
+
+    fn read_file_bytes(&self, file: &FSINode, offset: usize, len: usize) -> Vec<u8> {
+        let mut dest = vec![0u8; len];
+        let num_read = self.read_file_bytes_in_place(file, offset, &mut dest);
+        dest.truncate(num_read);
+        dest
+    }
+
 }
 
 fn slice_to_four_bytes(arr: &[u8]) -> [u8;4] {
@@ -103,6 +155,18 @@ impl From<&[u8]> for FSINode {
 
         FSINode{
             uid, gid, mode, ctime, mtime, size, pointers,
+        }
+    }
+}
+
+impl From<&[u8]> for DirectoryEntry{
+    fn from(dirent: &[u8]) -> Self {
+        let valid = dirent[0] & 0x80 != 0;
+        let inode_ptr = u32::from_le_bytes(slice_to_four_bytes(&dirent[0..4])) & 0x7FFFFFFF;
+        let name_nonzero: Vec<NonZeroU8> = dirent[4..32].into_iter().map_while(|ch| NonZeroU8::new(*ch)).collect();
+        let name = CString::from(name_nonzero);
+        DirectoryEntry{
+            valid, inode_ptr, name
         }
     }
 }
@@ -153,11 +217,11 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         // self.bit_mask_block = BitMaskBlock::default();
         Ok(())
     }
-/*
+
     fn lookup(&mut self, _req: &fuse::Request, _parent: u64, _name: &std::ffi::OsStr, reply: fuse::ReplyEntry) {
-        
+        reply.error(-1)
     }
- */
+
 
     fn getattr(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyAttr) {
         let _ino = if _ino == 1 {2} else {_ino};
@@ -166,17 +230,24 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         reply.attr(&time::get_time(), &block_info.to_fileattr(_ino))
     }
 
+    fn readdir(&mut self, _req: &fuse::Request, _ino: u64, _fh: u64, _offset: i64, mut reply: fuse::ReplyDirectory) {
+        let _ino = if _ino == 1 {2} else {_ino};
+
+        let block_info = FSINode::from(self.block_system.block_read(_ino as usize).unwrap().as_slice());
+        let dir_contents = self.read_file_bytes(&block_info, 0, block_info.size as usize);
+        for dirent in dir_contents.chunks_exact(32).map(|raw_fsdir| DirectoryEntry::from(raw_fsdir)).filter(|dir| dir.valid) {
+            let name = OsString::from(dirent.name.to_string_lossy().deref());
+            reply.add(dirent.inode_ptr as u64, 0, RegularFile, &name);
+        }
+
+    }
+
     fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
         let super_block = FsSuperBlock::from(self.block_system.block_read(0).unwrap().as_slice());
 
         reply.statfs((super_block.disk_size - 2) as u64, self.free_block_indices.len() as u64,
                      self.free_block_indices.len() as u64, (super_block.disk_size - 2) as u64,
-                     self.free_block_indices.len() as u64, FS_BLOCK_SIZE, 27,
-                     FS_BLOCK_SIZE)
+                     self.free_block_indices.len() as u64, FS_BLOCK_SIZE as u32, 27,
+                     FS_BLOCK_SIZE as u32)
     }
-
-    /*
-    fn readdir(&mut self, _req: &fuse::Request, _ino: u64, _fh: u64, _offset: i64, reply: fuse::ReplyDirectory) {
-        
-    }*/
 }
