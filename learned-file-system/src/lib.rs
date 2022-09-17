@@ -222,15 +222,23 @@ impl FSINode{
 }
 
 impl<BF: BlockFile> LearnedFileSystem<BF> {
-    pub fn free_block(&mut self, block_index: usize) -> bool {
-        if self.free_block_indices.contains(&block_index) {return false;}
+    /// Read Bitmask block from disk, clear all bits given, and write bitmask
+    /// block back to disk
+    pub fn free_blocks(&mut self, block_indices: Vec<usize>) -> bool {
+        for block_index in block_indices.iter() {
+            if self.free_block_indices.contains(block_index) {return false;}
+        }
         let mut bit_mask_block = BitMaskBlock::from(
             self.block_system.block_read(self.bit_mask_block_index).unwrap().as_slice()
         );
-        bit_mask_block.clear_bit(block_index as u32);
+        for block_index in block_indices.iter() {
+            bit_mask_block.clear_bit(*block_index as u32);
+        }
         let res = self.block_system.block_write(&bit_mask_block.bit_mask.clone(), self.bit_mask_block_index);
         if res.is_err() || res.unwrap() != FS_BLOCK_SIZE {return false;}
-        self.free_block_indices.insert(block_index);
+        for block_index in block_indices.iter() {
+            self.free_block_indices.insert(*block_index);
+        }
         true
     }
 }
