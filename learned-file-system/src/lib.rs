@@ -297,20 +297,13 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
 
         let block_info = FSINode::from(self.block_system.block_read(_ino as usize).unwrap().as_slice());
         let dir_contents = self.read_file_bytes(&block_info, 0, block_info.size as usize);
-<<<<<<< HEAD
         for dirent in dir_contents.chunks_exact(32).map(DirectoryEntry::from).filter(|dir| dir.valid) {
-=======
-        for (off, dirent) in dir_contents.chunks_exact(32).map(|raw_fsdir| DirectoryEntry::from(raw_fsdir)).filter(|dir| dir.valid).enumerate().skip(_offset as usize) {
->>>>>>> 37a5cc119dac00219c344a71c76aa46cbe9beee0
-            let name = OsString::from(dirent.name.to_string_lossy().deref());
-            reply.add(dirent.inode_ptr as u64, (off + 1) as i64, Directory, &name);
+            for (off, dirent) in dir_contents.chunks_exact(32).map(|raw_fsdir| DirectoryEntry::from(raw_fsdir)).filter(|dir| dir.valid).enumerate().skip(_offset as usize) {
+                let name = OsString::from(dirent.name.to_string_lossy().deref());
+                reply.add(dirent.inode_ptr as u64, (off + 1) as i64, Directory, &name);
+            }
         }
-<<<<<<< HEAD
-        reply.ok();
-=======
-
         reply.ok()
->>>>>>> 37a5cc119dac00219c344a71c76aa46cbe9beee0
     }
 
     fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
@@ -320,9 +313,5 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
                      self.free_block_indices.len() as u64, (super_block.disk_size - 2) as u64,
                      self.free_block_indices.len() as u64, FS_BLOCK_SIZE as u32, 27,
                      FS_BLOCK_SIZE as u32)
-    }
-
-    fn unlink(&mut self, _req: &fuse::Request, _parent: u64, _name: &std::ffi::OsStr, reply: fuse::ReplyEmpty) {
-        
     }
 }
