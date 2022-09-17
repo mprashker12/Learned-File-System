@@ -1,5 +1,6 @@
 use fuse::mount;
 use std::env;
+use std::ffi::OsStr;
 use std::process::exit;
 use learned_file_system::LearnedFileSystem;
 
@@ -26,6 +27,13 @@ fn main() {
 
     let mountpoint = args.get(3).unwrap();
 
+    env_logger::init();
+
     let l = LearnedFileSystem::new(block_device);
-    mount(l, mountpoint, &[]).unwrap();
+    let options = ["-o", "ro", "-o", "fsname=hello"]
+        .iter()
+        .map(|o| o.as_ref())
+        .collect::<Vec<&OsStr>>();
+
+    mount(l, mountpoint, &options).unwrap();
 }
