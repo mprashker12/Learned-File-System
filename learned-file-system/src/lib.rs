@@ -5,7 +5,7 @@
 pub mod utils;
 
 use time::Timespec;
-use fuse::{FileAttr, Filesystem, FileType};
+use fuse::{FileAttr, Filesystem, FileType, FUSE_ROOT_ID};
 use std::os::raw::c_int;
 use std::collections::BTreeSet;
 use std::ffi::{CStr, CString, OsString};
@@ -13,6 +13,7 @@ use std::num::NonZeroU8;
 use std::ops::Deref;
 use fuse::FileType::{Directory, RegularFile};
 use crate::utils::block_file::BlockFile;
+use libc::ENOENT;
 
 
 const FS_BLOCK_SIZE: usize = 4096;
@@ -219,12 +220,23 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     }
 
     fn lookup(&mut self, _req: &fuse::Request, _parent: u64, _name: &std::ffi::OsStr, reply: fuse::ReplyEntry) {
-        reply.error(-1)
+        let _ino = if _parent == FUSE_ROOT_ID {2} else {_parent};
+
+        let block_info = FSINode::from(self.block_system.block_read(_ino as usize).unwrap().as_slice());
+        let dir_contents = self.read_file_bytes(&block_info, 0, block_info.size as usize);
+        for dirent in dir_contents.chunks_exact(32).map(|raw_fsdir| DirectoryEntry::from(raw_fsdir)).filter(|dir| dir.valid) {
+            let name = OsString::from(dirent.name.to_string_lossy().deref());
+            if name == _name {
+                let element_block_info = FSINode::from(self.block_system.block_read(dirent.inode_ptr as usize).unwrap().as_slice());
+                reply.entry(&time::get_time(), &element_block_info.to_fileattr(dirent.inode_ptr as u64), 0);
+                return;
+            }
+        }
+        reply.error(ENOENT);
     }
 
-
     fn getattr(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyAttr) {
-        let _ino = if _ino == 1 {2} else {_ino};
+        let _ino = if _ino == FUSE_ROOT_ID {2} else {_ino};
         let block_info = FSINode::from(self.block_system.block_read(_ino as usize).unwrap().as_slice());
 
         reply.attr(&time::get_time(), &block_info.to_fileattr(_ino))
