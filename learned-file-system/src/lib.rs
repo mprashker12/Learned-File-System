@@ -4,14 +4,14 @@
 
 pub mod utils;
 
-use time::Timespec;
+use time::{Duration, Timespec};
 use fuse::{FileAttr, Filesystem, FileType, FUSE_ROOT_ID};
 use utils::bitmask::BitMaskBlock;
 use std::os::raw::c_int;
 use std::collections::BTreeSet;
 use std::ffi::{CStr, CString, OsString};
 use std::num::NonZeroU8;
-use std::ops::Deref;
+use std::ops::{Add, Deref};
 use fuse::FileType::{Directory, RegularFile};
 use crate::utils::block_file::BlockFile;
 use libc::ENOENT;
@@ -59,7 +59,7 @@ pub struct LearnedFileSystem <BF : BlockFile> {
 
 impl <BF: BlockFile>  LearnedFileSystem<BF> {
     pub fn new(block_system: BF) -> Self {
-        let mut free_block_indices = BTreeSet::new(); 
+        let mut free_block_indices = BTreeSet::new();
         for index in 2..block_system.num_blocks() {
             free_block_indices.insert(index);
         }
@@ -69,6 +69,18 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
             super_block_index: 0,
             bit_mask_block_index: 1,
         }
+    }
+
+    pub fn free_block(&mut self, block_index: usize) -> bool {
+        if self.free_block_indices.contains(&block_index) {return false;}
+        let mut bit_mask_block = BitMaskBlock::from(
+            self.block_system.block_read(self.bit_mask_block_index).unwrap().as_slice()
+        );
+        bit_mask_block.clear_bit(block_index as u32);
+        let res = self.block_system.block_write(&bit_mask_block.bit_mask.clone(), self.bit_mask_block_index);
+        if res.is_err() || res.unwrap() != FS_BLOCK_SIZE {return false;}
+        self.free_block_indices.insert(block_index);
+        true
     }
 
     pub fn first_free_block(&self) -> u32 {
@@ -221,6 +233,10 @@ impl FSINode{
     }
 }
 
+fn in_one_sec() -> Timespec{
+    time::get_time().add(Duration::seconds(1))
+}
+
 impl<BF: BlockFile> LearnedFileSystem<BF> {
     /// Read Bitmask block from disk, clear all bits given, and write bitmask
     /// block back to disk
@@ -262,18 +278,18 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
             let name = OsString::from(dirent.name.to_string_lossy().deref());
             if name == _name {
                 let element_block_info = FSINode::from(self.block_system.block_read(dirent.inode_ptr as usize).unwrap().as_slice());
-                reply.entry(&time::get_time(), &element_block_info.to_fileattr(dirent.inode_ptr as u64), 0);
+                reply.entry(&in_one_sec(), &element_block_info.to_fileattr(dirent.inode_ptr as u64), 0);
                 return;
             }
         }
         reply.error(ENOENT);
     }
 
-    fn getattr(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyAttr) {
-        let _ino = if _ino == FUSE_ROOT_ID {2} else {_ino};
+    fn getattr(&mut self, _req: &fuse::Request, orig_ino: u64, reply: fuse::ReplyAttr) {
+        let _ino = if orig_ino == FUSE_ROOT_ID {2} else {orig_ino};
         let block_info = FSINode::from(self.block_system.block_read(_ino as usize).unwrap().as_slice());
 
-        reply.attr(&time::get_time(), &block_info.to_fileattr(_ino))
+        reply.attr(&in_one_sec(), &block_info.to_fileattr(orig_ino))
     }
 
     fn readdir(&mut self, _req: &fuse::Request, _ino: u64, _fh: u64, _offset: i64, mut reply: fuse::ReplyDirectory) {
@@ -281,11 +297,12 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
 
         let block_info = FSINode::from(self.block_system.block_read(_ino as usize).unwrap().as_slice());
         let dir_contents = self.read_file_bytes(&block_info, 0, block_info.size as usize);
-        for dirent in dir_contents.chunks_exact(32).map(|raw_fsdir| DirectoryEntry::from(raw_fsdir)).filter(|dir| dir.valid) {
+        for (off, dirent) in dir_contents.chunks_exact(32).map(|raw_fsdir| DirectoryEntry::from(raw_fsdir)).filter(|dir| dir.valid).enumerate().skip(_offset as usize) {
             let name = OsString::from(dirent.name.to_string_lossy().deref());
-            reply.add(dirent.inode_ptr as u64, 0, RegularFile, &name);
+            reply.add(dirent.inode_ptr as u64, (off + 1) as i64, Directory, &name);
         }
 
+        reply.ok()
     }
 
     fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
