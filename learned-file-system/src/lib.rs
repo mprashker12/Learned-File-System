@@ -1,8 +1,5 @@
-#![feature(slice_as_chunks)]
-#![feature(int_roundings)]
-
-
 pub mod utils;
+mod structs;
 
 use time::{Duration, Timespec};
 use fuse::{FileAttr, Filesystem, FileType, FUSE_ROOT_ID};
@@ -15,6 +12,7 @@ use std::ops::{Add, Deref};
 use fuse::FileType::{Directory, RegularFile};
 use crate::utils::block_file::BlockFile;
 use libc::ENOENT;
+use crate::utils::div_ceil;
 
 
 const FS_BLOCK_SIZE: usize = 4096;
@@ -71,7 +69,7 @@ impl FSINode{
             crtime: time_to_timespec(self.ctime),
             atime: time_to_timespec(self.mtime),
             size: self.size as u64,
-            blocks: (self.size as u64).div_ceil(FS_BLOCK_SIZE as u64),
+            blocks: div_ceil(self.size as u64, FS_BLOCK_SIZE as u64),
             nlink: 1,
             rdev: 0,
             flags: 0,
@@ -275,8 +273,9 @@ impl From<&[u8]> for FSINode {
         let mtime = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[12..16]));
         let size = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[16..20]));
 
-        let pointers = inode_bytes[20..].as_chunks::<4>().0.iter()
-            .map(|chunk| u32::from_le_bytes(*chunk))
+
+        let pointers = inode_bytes[20..].chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(slice_to_four_bytes(chunk)))
             .collect();
 
         FSINode{

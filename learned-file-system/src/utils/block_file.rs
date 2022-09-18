@@ -1,6 +1,7 @@
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::os::unix::fs::FileExt;
 use std::fs::File;
+use crate::div_ceil;
 
 
 pub trait BlockFile {
@@ -28,7 +29,7 @@ pub struct BlockFileWrapper{
 impl BlockFileWrapper {
     pub fn new(block_size: usize, file: File) -> Self{
         let fsize = file.metadata().unwrap().len() as usize;
-        let num_blocks = fsize.div_ceil(block_size);
+        let num_blocks = div_ceil(fsize, block_size);
         BlockFileWrapper {
             block_size, num_blocks, file
         }
