@@ -97,7 +97,7 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
     }
 
      /// Read Bitmask block from disk, clear all bits given, and write bitmask
-    /// block back to disk
+     /// block back to disk
     pub fn free_blocks(&mut self, block_indices: Vec<usize>) -> bool {
         for block_index in block_indices.iter() {
             if self.free_block_indices.contains(block_index) {return false;}
@@ -178,6 +178,7 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
 //Main Implementations of the File System for LearnedFileSystem
 
 impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
+    
     fn init(&mut self, _req: &fuse::Request) -> Result<(), c_int> {
         let super_block_data = self.block_system.block_read(self.super_block_index).map_err(|_| -1)?;
         let super_block = FsSuperBlock::from(super_block_data.as_slice());
@@ -209,12 +210,11 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     }
 
     fn readdir(&mut self, _req: &fuse::Request, _ino: u64, _fh: u64, _offset: i64, mut reply: fuse::ReplyDirectory) {
-        let _ino = if _ino == 1 {2} else {_ino};
-
+        let _ino = if _ino == FUSE_ROOT_ID {2} else {_ino};
         let block_info = FSINode::from(self.block_system.block_read(_ino as usize).unwrap().as_slice());
         let dir_contents = self.read_file_bytes(&block_info, 0, block_info.size as usize);
         for dirent in dir_contents.chunks_exact(32).map(DirectoryEntry::from).filter(|dir| dir.valid) {
-            for (off, dirent) in dir_contents.chunks_exact(32).map(|raw_fsdir| DirectoryEntry::from(raw_fsdir)).filter(|dir| dir.valid).enumerate().skip(_offset as usize) {
+            for (off, dirent) in dir_contents.chunks_exact(32).map(DirectoryEntry::from).filter(|dir| dir.valid).enumerate().skip(_offset as usize) {
                 let name = OsString::from(dirent.name.to_string_lossy().deref());
                 reply.add(dirent.inode_ptr as u64, (off + 1) as i64, Directory, &name);
             }
@@ -230,6 +230,7 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
                      self.free_block_indices.len() as u64, FS_BLOCK_SIZE as u32, 27,
                      FS_BLOCK_SIZE as u32);
     }
+
 }
 
 fn slice_to_four_bytes(arr: &[u8]) -> [u8;4] {
