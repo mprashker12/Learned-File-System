@@ -44,7 +44,6 @@ pub struct DirectoryBlock {
 }
 
 pub struct DirectoryEntry {
-    valid: bool,
     inode_ptr: u32,
     name: CString,
 }
@@ -191,7 +190,7 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
 
         let block_info = FSINode::from(self.block_system.block_read(_ino as usize).unwrap().as_slice());
         let dir_contents = self.read_file_bytes(&block_info, 0, block_info.size as usize);
-        for dirent in dir_contents.chunks_exact(32).map(DirectoryEntry::from).filter(|dir| dir.valid) {
+        for dirent in dir_contents.chunks_exact(32).map(DirectoryEntry::try_from).filter_map(Result::ok) {
             let name = OsString::from(dirent.name.to_string_lossy().deref());
             if name == _name {
                 let element_block_info = FSINode::from(self.block_system.block_read(dirent.inode_ptr as usize).unwrap().as_slice());
@@ -213,11 +212,9 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         let _ino = if _ino == FUSE_ROOT_ID {2} else {_ino};
         let block_info = FSINode::from(self.block_system.block_read(_ino as usize).unwrap().as_slice());
         let dir_contents = self.read_file_bytes(&block_info, 0, block_info.size as usize);
-        for dirent in dir_contents.chunks_exact(32).map(DirectoryEntry::from).filter(|dir| dir.valid) {
-            for (off, dirent) in dir_contents.chunks_exact(32).map(DirectoryEntry::from).filter(|dir| dir.valid).enumerate().skip(_offset as usize) {
-                let name = OsString::from(dirent.name.to_string_lossy().deref());
-                reply.add(dirent.inode_ptr as u64, (off + 1) as i64, Directory, &name);
-            }
+        for (off, dirent) in dir_contents.chunks_exact(32).map(DirectoryEntry::try_from).filter_map(Result::ok).enumerate().skip(_offset as usize) {
+            let name = OsString::from(dirent.name.to_string_lossy().deref());
+            reply.add(dirent.inode_ptr as u64, (off + 1) as i64, Directory, &name);
         }
         reply.ok()
     }
@@ -280,14 +277,21 @@ impl From<&[u8]> for FSINode {
     }
 }
 
-impl From<&[u8]> for DirectoryEntry{
-    fn from(dirent: &[u8]) -> Self {
+impl TryFrom<&[u8]> for DirectoryEntry{
+
+    type Error = ();
+
+    fn try_from(dirent: &[u8]) -> Result<Self, Self::Error> {
         let valid = dirent[0] & 0x80 != 0;
-        let inode_ptr = u32::from_le_bytes(slice_to_four_bytes(&dirent[0..4])) & 0x7FFFFFFF;
-        let name_nonzero: Vec<NonZeroU8> = dirent[4..32].iter().map_while(|ch| NonZeroU8::new(*ch)).collect();
-        let name = CString::from(name_nonzero);
-        DirectoryEntry{
-            valid, inode_ptr, name
+        if valid {
+            let inode_ptr = u32::from_le_bytes(slice_to_four_bytes(&dirent[0..4])) >> 1; // Compensate for the valid bit
+            let name_nonzero: Vec<NonZeroU8> = dirent[4..32].iter().map_while(|ch| NonZeroU8::new(*ch)).collect();
+            let name = CString::from(name_nonzero);
+            Ok(DirectoryEntry{
+                inode_ptr, name
+            })
+        } else {
+            Err(())
         }
     }
 }
