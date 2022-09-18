@@ -83,10 +83,8 @@ impl FSINode{
 
 impl <BF: BlockFile>  LearnedFileSystem<BF> {
     pub fn new(block_system: BF) -> Self {
-        let mut free_block_indices = BTreeSet::new();
-        for index in 2..block_system.num_blocks() {
-            free_block_indices.insert(index);
-        }
+        let free_block_indices = BTreeSet::new();
+
         LearnedFileSystem {
             block_system,
             free_block_indices,
@@ -182,6 +180,16 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         let super_block_data = self.block_system.block_read(self.super_block_index).map_err(|_| -1)?;
         let super_block = FsSuperBlock::from(super_block_data.as_slice());
         if super_block.magic != FS_MAGIC_NUM {return Err(-1)};
+
+        let bit_mask_block = self.block_system.block_read(self.bit_mask_block_index).map_err(|_| -1)?;
+        for index in 0..self.block_system.num_blocks() {
+            let bit_map_idx = index / 8;
+            let bit_map_bit_idx = index % 8;
+            if (bit_mask_block[bit_map_idx] >> (7 - bit_map_bit_idx)) & 1 == 0{
+                self.free_block_indices.insert(index);
+            }
+        }
+
         Ok(())
     }
 
@@ -282,7 +290,7 @@ impl TryFrom<&[u8]> for DirectoryEntry{
     type Error = ();
 
     fn try_from(dirent: &[u8]) -> Result<Self, Self::Error> {
-        let valid = dirent[0] & 0x80 != 0;
+        let valid = dirent[0] & 0x01 != 0;
         if valid {
             let inode_ptr = u32::from_le_bytes(slice_to_four_bytes(&dirent[0..4])) >> 1; // Compensate for the valid bit
             let name_nonzero: Vec<NonZeroU8> = dirent[4..32].iter().map_while(|ch| NonZeroU8::new(*ch)).collect();
