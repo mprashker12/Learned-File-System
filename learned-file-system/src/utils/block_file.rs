@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::os::unix::fs::FileExt;
 use std::fs::File;
@@ -53,5 +54,44 @@ impl BlockFile for BlockFileWrapper {
     fn block_write(&mut self, buf: &[u8], block_address: usize) -> std::io::Result<usize> {
         let start = block_address*self.block_size;
         self.file.write_at(buf, start as u64)
+    }
+}
+
+pub struct LoggingBlockFileWrapper<T : BlockFile, W: Write>{
+    inner: T,
+    logger: RefCell<W>
+}
+
+impl <T: BlockFile, W: Write> LoggingBlockFileWrapper<T, W>{
+    fn new(block_file: T, logger: W) -> Self{
+        LoggingBlockFileWrapper{
+            inner: block_file,
+            logger: RefCell::new(logger)
+        }
+    }
+}
+
+impl <T: BlockFile, W: Write> BlockFile for LoggingBlockFileWrapper<T, W>{
+    fn block_size(&self) -> usize {
+        self.inner.block_size()
+    }
+
+    fn num_blocks(&self) -> usize {
+        self.inner.num_blocks()
+    }
+
+    fn block_read_in_place(&self, buf: &mut [u8], block_address: usize) -> std::io::Result<usize> {
+        self.logger.borrow_mut().write(format!("R {}", block_address.to_string()).as_bytes())?;
+        self.inner.block_read_in_place(buf, block_address)
+    }
+
+    fn block_read(&self, block_address: usize) -> std::io::Result<Vec<u8>> {
+        self.logger.borrow_mut().write(format!("R {}", block_address.to_string()).as_bytes())?;
+        self.inner.block_read(block_address)
+    }
+
+    fn block_write(&mut self, buf: &[u8], block_address: usize) -> std::io::Result<usize> {
+        self.logger.borrow_mut().write(format!("W {}", block_address.to_string()).as_bytes())?;
+        self.inner.block_write(buf, block_address)
     }
 }
