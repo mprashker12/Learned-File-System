@@ -2,11 +2,11 @@ pub mod utils;
 mod structs;
 
 use time::{Duration, Timespec};
-use fuse::{FileAttr, Filesystem, FileType, FUSE_ROOT_ID, ReplyData, Request};
+use fuse::{FileAttr, Filesystem, FileType, FUSE_ROOT_ID, ReplyData, ReplyEntry, ReplyWrite, Request};
 use utils::bitmask::BitMaskBlock;
 use std::os::raw::c_int;
 use std::collections::BTreeSet;
-use std::ffi::{CStr, CString, OsString};
+use std::ffi::{CStr, CString, OsStr, OsString};
 use std::num::NonZeroU8;
 use std::ops::{Add, Deref};
 use fuse::FileType::{Directory, RegularFile};
@@ -220,6 +220,24 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         reply.attr(&in_one_sec(), &block_info.to_fileattr(orig_ino))
     }
 
+    fn mknod(&mut self, _req: &Request, _parent: u64, _name: &OsStr, _mode: u32, _rdev: u32, reply: ReplyEntry) {
+        todo!()
+    }
+
+    fn mkdir(&mut self, _req: &Request, _parent: u64, _name: &OsStr, _mode: u32, reply: ReplyEntry) {
+        todo!()
+    }
+
+    fn read(&mut self, _req: &Request, _ino: u64, _fh: u64, _offset: i64, _size: u32, reply: ReplyData) {
+        let block_info = self.get_inode(_ino).unwrap();
+        let data = self.read_file_bytes(&block_info, _offset as usize, _size as usize);
+        reply.data(&data)
+    }
+
+    fn write(&mut self, _req: &Request, _ino: u64, _fh: u64, _offset: i64, _data: &[u8], _flags: u32, reply: ReplyWrite) {
+        todo!()
+    }
+
     fn readdir(&mut self, _req: &fuse::Request, _ino: u64, _fh: u64, _offset: i64, mut reply: fuse::ReplyDirectory) {
         let _ino = if _ino == FUSE_ROOT_ID {2} else {_ino};
         let block_info = self.get_inode(_ino).unwrap();
@@ -229,12 +247,6 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
             reply.add(dirent.inode_ptr as u64, (off + 1) as i64, Directory, &name);
         }
         reply.ok()
-    }
-
-    fn read(&mut self, _req: &Request, _ino: u64, _fh: u64, _offset: i64, _size: u32, reply: ReplyData) {
-        let block_info = self.get_inode(_ino).unwrap();
-        let data = self.read_file_bytes(&block_info, _offset as usize, _size as usize);
-        reply.data(&data)
     }
 
     fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
