@@ -168,6 +168,10 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
         dest
     }
 
+    fn get_superblock(&self) -> std::io::Result<FsSuperBlock>{
+        Ok(FsSuperBlock::from(self.block_system.block_read(0)?.as_slice()))
+    }
+
     fn get_inode(&self, inode: u64) -> std::io::Result<FSINode>{
         Ok(FSINode::from(self.block_system.block_read(inode as usize)?.as_slice()))
     }
@@ -178,8 +182,7 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
 impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     
     fn init(&mut self, _req: &fuse::Request) -> Result<(), c_int> {
-        let super_block_data = self.block_system.block_read(self.super_block_index).map_err(|_| -1)?;
-        let super_block = FsSuperBlock::from(super_block_data.as_slice());
+        let super_block = self.get_superblock().map_err(|_| -1)?;
         if super_block.magic != FS_MAGIC_NUM {return Err(-1)};
 
         let bit_mask_block = self.block_system.block_read(self.bit_mask_block_index).map_err(|_| -1)?;
@@ -235,7 +238,7 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     }
 
     fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
-        let super_block = FsSuperBlock::from(self.block_system.block_read(0).unwrap().as_slice());
+        let super_block = self.get_superblock().unwrap();
 
         reply.statfs((super_block.disk_size - 2) as u64, self.free_block_indices.len() as u64,
                      self.free_block_indices.len() as u64, (super_block.disk_size - 2) as u64,
