@@ -1,7 +1,7 @@
 pub mod utils;
 mod structs;
 
-use time::{Duration, Timespec};
+use time::{Duration, get_time, Timespec};
 use fuse::{FileAttr, Filesystem, FileType, FUSE_ROOT_ID, ReplyData, ReplyEntry, ReplyWrite, Request};
 use utils::bitmask::BitMaskBlock;
 use std::os::raw::c_int;
@@ -9,9 +9,10 @@ use std::collections::BTreeSet;
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::num::NonZeroU8;
 use std::ops::{Add, Deref};
+use std::os::unix::ffi::OsStrExt;
 use fuse::FileType::{Directory, RegularFile};
 use crate::utils::block_file::BlockFile;
-use libc::ENOENT;
+use libc::{ENOENT, EEXIST, ENAMETOOLONG, ENOSPC};
 use crate::utils::div_ceil;
 
 
@@ -26,13 +27,13 @@ pub struct FsSuperBlock {
 }
 
 pub struct FSINode {
-    uid: u16,
-    gid: u16,
-    mode: u32,
-    ctime: u32,
-    mtime: u32,
-    size: u32,
-    pointers: Vec<u32> // [u32; ((FS_BLOCK_SIZE - 20)/4) as usize],
+    pub uid: u16,
+    pub gid: u16,
+    pub mode: u32,
+    pub ctime: u32,
+    pub mtime: u32,
+    pub size: u32,
+    pub pointers: Vec<u32> // [u32; ((FS_BLOCK_SIZE - 20)/4) as usize],
 }
 
 
@@ -42,8 +43,8 @@ pub struct DirectoryBlock {
 }
 
 pub struct DirectoryEntry {
-    inode_ptr: u32,
-    name: CString,
+    pub inode_ptr: u32,
+    pub name: OsString,
 }
 
 
@@ -175,6 +176,19 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
     fn get_inode(&self, inode: u64) -> std::io::Result<FSINode>{
         Ok(FSINode::from(self.block_system.block_read(inode as usize)?.as_slice()))
     }
+
+    fn allocate_blocks(&mut self, num_blocks: usize) -> std::io::Result<Vec<usize>>{
+        todo!()
+    }
+
+    fn get_dirents_incl_gaps(&self, block_info: &FSINode) -> Vec<Result<DirectoryEntry, ()>>{
+        let dir_contents = self.read_file_bytes(&block_info, 0, block_info.size as usize);
+        dir_contents.chunks_exact(32).map(DirectoryEntry::try_from).collect()
+    }
+
+    fn get_valid_dirents(&self, block_info: &FSINode) -> Vec<DirectoryEntry>{
+        self.get_dirents_incl_gaps(block_info).into_iter().filter_map(Result::ok).collect()
+    }
 }
 
 //Main Implementations of the File System for LearnedFileSystem
@@ -201,10 +215,8 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         let _ino = if _parent == FUSE_ROOT_ID {2} else {_parent};
 
         let block_info = self.get_inode(_ino).unwrap();
-        let dir_contents = self.read_file_bytes(&block_info, 0, block_info.size as usize);
-        for dirent in dir_contents.chunks_exact(32).map(DirectoryEntry::try_from).filter_map(Result::ok) {
-            let name = OsString::from(dirent.name.to_string_lossy().deref());
-            if name == _name {
+        for dirent in self.get_valid_dirents(&block_info) {
+            if dirent.name == _name {
                 let element_block_info = FSINode::from(self.block_system.block_read(dirent.inode_ptr as usize).unwrap().as_slice());
                 reply.entry(&in_one_sec(), &element_block_info.to_fileattr(dirent.inode_ptr as u64), 0);
                 return;
@@ -225,7 +237,54 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     }
 
     fn mkdir(&mut self, _req: &Request, _parent: u64, _name: &OsStr, _mode: u32, reply: ReplyEntry) {
-        todo!()
+        if _name.as_bytes().len() > 27 {
+            reply.error(ENAMETOOLONG);
+            return;
+        }
+
+        let parent_inode = self.get_inode(_parent).unwrap();
+        let parent_dirents = self.get_dirents_incl_gaps(&parent_inode);
+        let first_free_parent_dirent_idx = parent_dirents.iter().enumerate().find(|(_, de)| de.is_err()).map(|(idx, _)| idx).unwrap_or(parent_dirents.len());
+
+        for existing_dirent in parent_dirents.into_iter().filter_map(Result::ok){
+            if existing_dirent.name == _name {
+                reply.error(EEXIST);
+                return;
+            }
+        }
+
+        match self.allocate_blocks(1){
+            Ok(newdir_blocks) => {
+
+                let newdir_inode_blknum = newdir_blocks[0];
+                let now_sec = get_time().sec;
+
+                let new_inode = FSINode {
+                    pointers: vec![],
+                    size: FS_BLOCK_SIZE as u32,
+                    uid: _req.uid() as u16,
+                    gid: _req.gid() as u16,
+                    mode: _mode,
+                    ctime: now_sec as u32,
+                    mtime: now_sec as u32
+                };
+
+                let ino_data: Vec<u8> = new_inode.into();
+                self.block_system.block_write(&ino_data, newdir_inode_blknum).unwrap();
+
+                let dirent = DirectoryEntry{
+                    inode_ptr: newdir_inode_blknum as u32,
+                    name: OsString::from(_name)
+                };
+
+                let dirent_data: Vec<u8> = dirent.into();
+                self.write_to_file(&parent_inode, &dirent_data, first_free_parent_dirent_idx*32);
+                reply.entry(&in_one_sec(), &new_inode.to_fileattr(newdir_inode_blknum as u64), 0)
+            }
+            Err(e) => {
+                reply.error(ENOSPC)
+            }
+        }
     }
 
     fn read(&mut self, _req: &Request, _ino: u64, _fh: u64, _offset: i64, _size: u32, reply: ReplyData) {
@@ -241,10 +300,8 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     fn readdir(&mut self, _req: &fuse::Request, _ino: u64, _fh: u64, _offset: i64, mut reply: fuse::ReplyDirectory) {
         let _ino = if _ino == FUSE_ROOT_ID {2} else {_ino};
         let block_info = self.get_inode(_ino).unwrap();
-        let dir_contents = self.read_file_bytes(&block_info, 0, block_info.size as usize);
-        for (off, dirent) in dir_contents.chunks_exact(32).map(DirectoryEntry::try_from).filter_map(Result::ok).enumerate().skip(_offset as usize) {
-            let name = OsString::from(dirent.name.to_string_lossy().deref());
-            reply.add(dirent.inode_ptr as u64, (off + 1) as i64, Directory, &name);
+        for (off, dirent) in self.get_valid_dirents(&block_info).into_iter().enumerate().skip(_offset as usize) {
+            reply.add(dirent.inode_ptr as u64, (off + 1) as i64, Directory, &dirent.name);
         }
         reply.ok()
     }
@@ -317,7 +374,8 @@ impl TryFrom<&[u8]> for DirectoryEntry{
         if valid {
             let inode_ptr = u32::from_le_bytes(slice_to_four_bytes(&dirent[0..4])) >> 1; // Compensate for the valid bit
             let name_nonzero: Vec<NonZeroU8> = dirent[4..32].iter().map_while(|ch| NonZeroU8::new(*ch)).collect();
-            let name = CString::from(name_nonzero);
+            let cname = CString::from(name_nonzero);
+            let name = OsString::from(cname.to_string_lossy().deref());
             Ok(DirectoryEntry{
                 inode_ptr, name
             })

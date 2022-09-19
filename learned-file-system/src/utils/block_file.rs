@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::io::{Read, Write, Seek, SeekFrom};
+use std::io::{Read, Write, Seek, SeekFrom, Error};
 use std::os::unix::fs::FileExt;
 use std::fs::File;
 use crate::div_ceil;
@@ -52,6 +52,9 @@ impl BlockFile for BlockFileWrapper {
     }
 
     fn block_write(&mut self, buf: &[u8], block_address: usize) -> std::io::Result<usize> {
+        if buf.len() != self.block_size{
+            return Err(Error::from(std::io::ErrorKind::Other));
+        }
         let start = block_address*self.block_size;
         self.file.write_at(buf, start as u64)
     }

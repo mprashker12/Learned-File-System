@@ -30,7 +30,7 @@ fn main() {
     env_logger::init();
 
     let l = LearnedFileSystem::new(block_device);
-    let options = ["-o", "ro", "-o", "fsname=hello"]
+    let options = ["-o", "fsname=hello"]
         .iter()
         .map(|o| o.as_ref())
         .collect::<Vec<&OsStr>>();
