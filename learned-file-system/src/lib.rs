@@ -2,7 +2,7 @@ pub mod utils;
 mod structs;
 
 use time::{Duration, Timespec};
-use fuse::{FileAttr, Filesystem, FileType, FUSE_ROOT_ID};
+use fuse::{FileAttr, Filesystem, FileType, FUSE_ROOT_ID, ReplyData, Request};
 use utils::bitmask::BitMaskBlock;
 use std::os::raw::c_int;
 use std::collections::BTreeSet;
@@ -168,6 +168,9 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
         dest
     }
 
+    fn get_inode(&self, inode: u64) -> std::io::Result<FSINode>{
+        Ok(FSINode::from(self.block_system.block_read(inode as usize)?.as_slice()))
+    }
 }
 
 //Main Implementations of the File System for LearnedFileSystem
@@ -194,7 +197,7 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     fn lookup(&mut self, _req: &fuse::Request, _parent: u64, _name: &std::ffi::OsStr, reply: fuse::ReplyEntry) {
         let _ino = if _parent == FUSE_ROOT_ID {2} else {_parent};
 
-        let block_info = FSINode::from(self.block_system.block_read(_ino as usize).unwrap().as_slice());
+        let block_info = self.get_inode(_ino).unwrap();
         let dir_contents = self.read_file_bytes(&block_info, 0, block_info.size as usize);
         for dirent in dir_contents.chunks_exact(32).map(DirectoryEntry::try_from).filter_map(Result::ok) {
             let name = OsString::from(dirent.name.to_string_lossy().deref());
@@ -209,20 +212,26 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
 
     fn getattr(&mut self, _req: &fuse::Request, orig_ino: u64, reply: fuse::ReplyAttr) {
         let _ino = if orig_ino == FUSE_ROOT_ID {2} else {orig_ino};
-        let block_info = FSINode::from(self.block_system.block_read(_ino as usize).unwrap().as_slice());
+        let block_info = self.get_inode(_ino).unwrap();
 
         reply.attr(&in_one_sec(), &block_info.to_fileattr(orig_ino))
     }
 
     fn readdir(&mut self, _req: &fuse::Request, _ino: u64, _fh: u64, _offset: i64, mut reply: fuse::ReplyDirectory) {
         let _ino = if _ino == FUSE_ROOT_ID {2} else {_ino};
-        let block_info = FSINode::from(self.block_system.block_read(_ino as usize).unwrap().as_slice());
+        let block_info = self.get_inode(_ino).unwrap();
         let dir_contents = self.read_file_bytes(&block_info, 0, block_info.size as usize);
         for (off, dirent) in dir_contents.chunks_exact(32).map(DirectoryEntry::try_from).filter_map(Result::ok).enumerate().skip(_offset as usize) {
             let name = OsString::from(dirent.name.to_string_lossy().deref());
             reply.add(dirent.inode_ptr as u64, (off + 1) as i64, Directory, &name);
         }
         reply.ok()
+    }
+
+    fn read(&mut self, _req: &Request, _ino: u64, _fh: u64, _offset: i64, _size: u32, reply: ReplyData) {
+        let block_info = self.get_inode(_ino).unwrap();
+        let data = self.read_file_bytes(&block_info, _offset as usize, _size as usize);
+        reply.data(&data)
     }
 
     fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
