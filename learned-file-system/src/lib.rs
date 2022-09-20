@@ -100,7 +100,7 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
 
         while total_byte_writes_queued < data.len() {
             let logical_block_num = file_ptr / FS_BLOCK_SIZE;
-            let block_offset = file_ptr & FS_BLOCK_SIZE;
+            let block_offset = file_ptr % FS_BLOCK_SIZE;
 
             let write_length = if (FS_BLOCK_SIZE - block_offset) > (data.len() - total_byte_writes_queued) {
                 data.len() - total_byte_writes_queued
