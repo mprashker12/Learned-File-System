@@ -9,7 +9,7 @@ pub trait BlockFile {
     fn block_size(&self) -> usize;
     fn num_blocks(&self) -> usize;
 
-    fn block_read_in_place(&self, buf: &mut [u8], block_address: usize) -> std::io::Result<usize>;
+    fn block_read_in_place<T: AsMut<[u8]>>(&self, buf: T, block_address: usize) -> std::io::Result<usize>;
     fn block_read(&self, block_address: usize) -> std::io::Result<Vec<u8>> {
         let mut output = vec![0; self.block_size()];
         self.block_read_in_place(&mut output, block_address)?;
@@ -18,7 +18,7 @@ pub trait BlockFile {
 
     
 
-    fn block_write(&mut self, buf: &[u8], block_address: usize) -> std::io::Result<usize>;
+    fn block_write<T : AsRef<[u8]>>(&mut self, buf: T, block_address: usize) -> std::io::Result<usize>;
 }
 
 pub struct BlockFileWrapper{
@@ -46,17 +46,17 @@ impl BlockFile for BlockFileWrapper {
         self.num_blocks
     }
 
-    fn block_read_in_place(&self, mut buf: &mut [u8], block_address: usize) -> std::io::Result<usize> {
+    fn block_read_in_place<T: AsMut<[u8]>>(&self, mut buf: T, block_address: usize) -> std::io::Result<usize>{
         let start = block_address*self.block_size;
-        self.file.read_at(&mut buf, start as u64)
+        self.file.read_at(buf.as_mut(), start as u64)
     }
 
-    fn block_write(&mut self, buf: &[u8], block_address: usize) -> std::io::Result<usize> {
-        if buf.len() != self.block_size{
+    fn block_write<T : AsRef<[u8]>>(&mut self, buf: T, block_address: usize) -> std::io::Result<usize> {
+        if buf.as_ref().len() != self.block_size{
             return Err(Error::from(std::io::ErrorKind::Other));
         }
         let start = block_address*self.block_size;
-        self.file.write_at(buf, start as u64)
+        self.file.write_at(buf.as_ref(), start as u64)
     }
 }
 
@@ -83,7 +83,7 @@ impl <T: BlockFile, W: Write> BlockFile for LoggingBlockFileWrapper<T, W>{
         self.inner.num_blocks()
     }
 
-    fn block_read_in_place(&self, buf: &mut [u8], block_address: usize) -> std::io::Result<usize> {
+    fn block_read_in_place<B: AsMut<[u8]>>(&self, buf: B, block_address: usize) -> std::io::Result<usize>{
         self.logger.borrow_mut().write(format!("R {}", block_address.to_string()).as_bytes())?;
         self.inner.block_read_in_place(buf, block_address)
     }
@@ -93,7 +93,7 @@ impl <T: BlockFile, W: Write> BlockFile for LoggingBlockFileWrapper<T, W>{
         self.inner.block_read(block_address)
     }
 
-    fn block_write(&mut self, buf: &[u8], block_address: usize) -> std::io::Result<usize> {
+    fn block_write<B : AsRef<[u8]>>(&mut self, buf: B, block_address: usize) -> std::io::Result<usize> {
         self.logger.borrow_mut().write(format!("W {}", block_address.to_string()).as_bytes())?;
         self.inner.block_write(buf, block_address)
     }

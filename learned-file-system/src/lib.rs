@@ -7,6 +7,8 @@ use utils::bitmask::BitMaskBlock;
 use std::os::raw::c_int;
 use std::collections::BTreeSet;
 use std::ffi::{CStr, CString, OsStr, OsString};
+use std::io::{Error, ErrorKind};
+use std::io::ErrorKind::{Other, OutOfMemory, StorageFull};
 use std::num::NonZeroU8;
 use std::ops::{Add, Deref};
 use std::os::unix::ffi::OsStrExt;
@@ -50,7 +52,7 @@ pub struct DirectoryEntry {
 
 pub struct LearnedFileSystem <BF : BlockFile> {
     block_system: BF,
-    free_block_indices: BTreeSet<usize>,
+    block_allocation_bitmask: BitMaskBlock,
     super_block_index: usize,
     bit_mask_block_index: usize,
 }
@@ -82,11 +84,11 @@ impl FSINode{
 
 impl <BF: BlockFile>  LearnedFileSystem<BF> {
     pub fn new(block_system: BF) -> Self {
-        let free_block_indices = BTreeSet::new();
+        let block_allocation_bitmask = BitMaskBlock::default();
 
         LearnedFileSystem {
             block_system,
-            free_block_indices,
+            block_allocation_bitmask,
             super_block_index: 0,
             bit_mask_block_index: 1,
         }
@@ -94,30 +96,17 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
 
      /// Read Bitmask block from disk, clear all bits given, and write bitmask
      /// block back to disk
-    pub fn free_blocks(&mut self, block_indices: Vec<usize>) -> bool {
-        for block_index in block_indices.iter() {
-            if self.free_block_indices.contains(block_index) {return false;}
+    pub fn free_blocks(&mut self, block_indices: Vec<u32>) -> std::io::Result<()> {
+        for block_index in block_indices {
+            if self.block_allocation_bitmask.is_free(block_index) {return Err(Error::from(Other));}
         }
-        let mut bit_mask_block = BitMaskBlock::from(
-            self.block_system.block_read(self.bit_mask_block_index).unwrap().as_slice()
-        );
-        for block_index in block_indices.iter() {
-            bit_mask_block.clear_bit(*block_index as u32);
+        for block_index in block_indices {
+            self.block_allocation_bitmask.clear_bit(block_index);
         }
-        let res = self.block_system.block_write(&bit_mask_block.bit_mask.clone(), self.bit_mask_block_index);
-        if res.is_err() || res.unwrap() != FS_BLOCK_SIZE {return false;}
-        for block_index in block_indices.iter() {
-            self.free_block_indices.insert(*block_index);
-        }
-        true
-    }
 
-    pub fn first_free_block(&self) -> u32 {
-        let mut free_block_iter = self.free_block_indices.iter();
-        if let Some(first_free_index) = free_block_iter.next() {
-            return *first_free_index as u32;
-        }
-        panic!("Trying to find a free block when all blocks are full");
+        self.block_system.block_write(&self.block_allocation_bitmask, self.bit_mask_block_index)?;
+
+        Ok(())
     }
 
     fn read_file_chunk(&self, file: &FSINode, block_num_in_file: usize, offset: usize, dest: &mut [u8]){
@@ -177,8 +166,17 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
         Ok(FSINode::from(self.block_system.block_read(inode as usize)?.as_slice()))
     }
 
-    fn allocate_blocks(&mut self, num_blocks: usize) -> std::io::Result<Vec<usize>>{
-        todo!()
+    fn allocate_blocks(&mut self, num_blocks: usize) -> std::io::Result<Vec<u32>>{
+        let first_n_blocks : Vec<u32> = self.block_allocation_bitmask.free_block_iter().take(num_blocks).collect();
+        if first_n_blocks.len() == num_blocks {
+            for block in first_n_blocks{
+                self.block_allocation_bitmask.set_bit(block)
+            }
+            self.block_system.block_write(&self.block_allocation_bitmask, self.bit_mask_block_index)?;
+            Ok(first_n_blocks)
+        } else{
+            Err(Error::from(OutOfMemory))
+        }
     }
 
     fn get_dirents_incl_gaps(&self, block_info: &FSINode) -> Vec<Result<DirectoryEntry, ()>>{
@@ -200,13 +198,7 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         if super_block.magic != FS_MAGIC_NUM {return Err(-1)};
 
         let bit_mask_block = self.block_system.block_read(self.bit_mask_block_index).map_err(|_| -1)?;
-        for index in 0..self.block_system.num_blocks() {
-            let bit_map_idx = index / 8;
-            let bit_map_bit_idx = index % 8;
-            if (bit_mask_block[bit_map_idx] >> (7 - bit_map_bit_idx)) & 1 == 0{
-                self.free_block_indices.insert(index);
-            }
-        }
+
 
         Ok(())
     }
@@ -309,9 +301,9 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     fn statfs(&mut self, _req: &fuse::Request, _ino: u64, reply: fuse::ReplyStatfs) {
         let super_block = self.get_superblock().unwrap();
 
-        reply.statfs((super_block.disk_size - 2) as u64, self.free_block_indices.len() as u64,
-                     self.free_block_indices.len() as u64, (super_block.disk_size - 2) as u64,
-                     self.free_block_indices.len() as u64, FS_BLOCK_SIZE as u32, 27,
+        reply.statfs((super_block.disk_size - 2) as u64, self.block_allocation_bitmask.num_free_indices() as u64,
+                     self.block_allocation_bitmask.num_free_indices() as u64, (super_block.disk_size - 2) as u64,
+                     self.block_allocation_bitmask.num_free_indices() as u64, FS_BLOCK_SIZE as u32, 27,
                      FS_BLOCK_SIZE as u32);
     }
 
@@ -333,17 +325,7 @@ impl From<&[u8]> for FsSuperBlock {
     }
 }
 
-impl From<&[u8]> for BitMaskBlock {
-    fn from(bit_mask_bytes: &[u8]) -> Self {
-        let mut bit_mask = [0u8; FS_BLOCK_SIZE];
-        for (index, byte) in bit_mask_bytes.iter().enumerate() {
-            bit_mask[index] = *byte;
-        }
-        BitMaskBlock {
-            bit_mask
-        }
-    }
-}
+
 
 impl From<&[u8]> for FSINode {
     fn from(inode_bytes: &[u8]) -> Self {
