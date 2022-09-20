@@ -4,6 +4,7 @@ use crate::{div_ceil, FS_BLOCK_SIZE};
 
 pub const NUM_POINTERS: usize = ((FS_BLOCK_SIZE - 20)/4) as usize;
 
+#[derive(Clone)]
 pub struct FSINode {
     pub uid: u16,
     pub gid: u16,

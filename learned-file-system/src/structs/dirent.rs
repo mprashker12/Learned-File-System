@@ -35,7 +35,7 @@ impl TryFrom<&[u8]> for DirectoryEntry{
 
 impl Into<Vec<u8>> for DirectoryEntry{
     fn into(self) -> Vec<u8> {
-        let dest = vec![0u8; 32];
+        let mut dest = vec![0u8; 32];
         dest[0..4].copy_from_slice(&self.inode_ptr.to_le_bytes());
         for (ch_idx, ch) in self.name.as_bytes().iter().enumerate().take(27){
             dest[4+ch_idx] = *ch

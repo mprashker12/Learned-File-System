@@ -26,7 +26,7 @@ impl AsRef<[u8]> for BitMaskBlock{
 }
 
 impl BitMaskBlock {
-    fn new(num_blocks: usize, bit_mask_bytes: &[u8]) -> Self {
+    pub fn new(num_blocks: usize, bit_mask_bytes: &[u8]) -> Self {
         let mut bit_mask = [0u8; FS_BLOCK_SIZE as usize];
         for (index, byte) in bit_mask_bytes.iter().enumerate() {
             bit_mask[index] = *byte;

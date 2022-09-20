@@ -14,7 +14,7 @@ use std::ops::{Add, Deref};
 use std::os::unix::ffi::OsStrExt;
 use fuse::FileType::{Directory, RegularFile};
 use crate::utils::block_file::BlockFile;
-use libc::{EEXIST, ENAMETOOLONG, ENOENT, ENOSPC};
+use libc::{EEXIST, EIO, ENAMETOOLONG, ENOENT, ENOSPC};
 use structs::dirent::DirectoryEntry;
 use structs::fsinode::FSINode;
 use structs::superblock::FsSuperBlock;
@@ -33,6 +33,18 @@ pub struct LearnedFileSystem <BF : BlockFile> {
     bit_mask_block_index: usize,
 }
 
+fn translate_error(e : ErrorKind) -> c_int{
+    match e {
+        ErrorKind::OutOfMemory => ENOSPC,
+        ErrorKind::AlreadyExists => EEXIST,
+        _ => EIO
+    }
+}
+
+fn translate_inode(ino: u64) -> u64{
+    if ino == FUSE_ROOT_ID {2} else {ino}
+}
+
 impl <BF: BlockFile>  LearnedFileSystem<BF> {
     pub fn new(block_system: BF) -> Self {
         let block_allocation_bitmask = BitMaskBlock::default();
@@ -48,8 +60,8 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
      /// Read Bitmask block from disk, clear all bits given, and write bitmask
      /// block back to disk
     pub fn free_blocks(&mut self, block_indices: Vec<u32>) -> std::io::Result<()> {
-        for block_index in block_indices {
-            if self.block_allocation_bitmask.is_free(block_index) {return Err(Error::from(Other));}
+        for block_index in block_indices.iter() {
+            if self.block_allocation_bitmask.is_free(*block_index) {return Err(Error::from(Other));}
         }
         for block_index in block_indices {
             self.block_allocation_bitmask.clear_bit(block_index);
@@ -60,16 +72,81 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
         Ok(())
     }
 
-    fn read_file_chunk(&self, file: &FSINode, block_num_in_file: usize, offset: usize, dest: &mut [u8]){
-        let disk_blknum = file.pointers[block_num_in_file] as usize;
-
-        if offset == 0 && dest.len() == self.block_system.block_size() {
-            self.block_system.block_read_in_place(dest, disk_blknum).unwrap();
+    /// ASSUMPTION: The relevant block has already been allocated and initialized to 0
+    fn write_file_chunk(&mut self, file: &FSINode, block_num_in_file: usize, offset: usize, data: &[u8]) -> std::io::Result<usize>{
+        if offset + data.len() > FS_BLOCK_SIZE {
+            panic!("Tried writing off end of file chunk");
         }
 
-        if offset + dest.len() > FS_BLOCK_SIZE {
+        let physical_block = file.pointers[block_num_in_file] as usize;
+
+        if offset == 0 && data.len() == FS_BLOCK_SIZE{
+            self.block_system.block_write(data, physical_block)
+        } else{
+            let mut pre_existing_chunk = self.block_system.block_read(physical_block)?;
+            pre_existing_chunk[offset..(offset+data.len())].copy_from_slice(data);
+            self.block_system.block_write(&pre_existing_chunk, physical_block)
+        }
+
+    }
+
+    /// NOTE: Does not write back the inode itself
+    fn write_file_data(&mut self, file: &mut FSINode, offset: usize, data: &[u8]) -> std::io::Result<usize>{
+        let mut operations = vec![];
+
+        let mut total_byte_writes_queued= 0;
+        let mut total_allocations_needed = 0;
+        let mut file_ptr = offset;
+
+        while total_byte_writes_queued < data.len() {
+            let logical_block_num = file_ptr / FS_BLOCK_SIZE;
+            let block_offset = file_ptr & FS_BLOCK_SIZE;
+
+            let write_length = if (FS_BLOCK_SIZE - block_offset) > (data.len() - total_byte_writes_queued) {
+                data.len() - total_byte_writes_queued
+            } else {
+                FS_BLOCK_SIZE - block_offset
+            };
+
+            let allocation_num = if file.pointers[logical_block_num] == 0 {
+                let anum = total_allocations_needed;
+                total_allocations_needed += 1;
+                Some(anum)
+            } else{
+                None
+            };
+
+            operations.push((&data[total_byte_writes_queued..(total_byte_writes_queued+write_length)], logical_block_num, block_offset, allocation_num));
+
+            total_byte_writes_queued += write_length;
+            file_ptr += write_length;
+        }
+
+        let allocations = self.allocate_blocks(total_allocations_needed)?;
+
+        for (data_chunk, logical_blk_num, offset, allocation) in operations{
+            if let Some(allocation_idx) = allocation {
+                    file.pointers[logical_blk_num] = allocations[allocation_idx] as u32;
+            }
+
+            self.write_file_chunk(file, logical_blk_num, offset, data_chunk)?;
+        }
+
+        Ok(total_byte_writes_queued)
+    }
+
+    fn read_file_chunk(&self, file: &FSINode, block_num_in_file: usize, offset: usize, mut dest: &mut [u8]){
+        let disk_blknum = file.pointers[block_num_in_file] as usize;
+        let len = dest.len();
+
+        if offset + len > FS_BLOCK_SIZE {
             panic!("Tried reading off end of file chunk");
         }
+
+        if offset == 0 && dest.len() == self.block_system.block_size() {
+            self.block_system.block_read_in_place(&mut dest, disk_blknum).unwrap();
+        }
+
         let blk = self.block_system.block_read(disk_blknum).unwrap();
         dest.copy_from_slice(&blk[offset..(offset+dest.len())])
     }
@@ -120,8 +197,8 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
     fn allocate_blocks(&mut self, num_blocks: usize) -> std::io::Result<Vec<u32>>{
         let first_n_blocks : Vec<u32> = self.block_allocation_bitmask.free_block_iter().take(num_blocks).collect();
         if first_n_blocks.len() == num_blocks {
-            for block in first_n_blocks{
-                self.block_allocation_bitmask.set_bit(block)
+            for block in first_n_blocks.iter(){
+                self.block_allocation_bitmask.set_bit(*block)
             }
             self.block_system.block_write(&self.block_allocation_bitmask, self.bit_mask_block_index)?;
             Ok(first_n_blocks)
@@ -145,17 +222,17 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
 impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     
     fn init(&mut self, _req: &fuse::Request) -> Result<(), c_int> {
-        let super_block = self.get_superblock().map_err(|_| -1)?;
+        let super_block = self.get_superblock().map_err(|e| translate_error(e.kind()))?;
         if super_block.magic != FS_MAGIC_NUM {return Err(-1)};
 
-        let bit_mask_block = self.block_system.block_read(self.bit_mask_block_index).map_err(|_| -1)?;
-
+        let bitmask_block = self.block_system.block_read(self.bit_mask_block_index).map_err(|e| translate_error(e.kind()))?;
+        self.block_allocation_bitmask = BitMaskBlock::new(super_block.disk_size as usize, &bitmask_block);
 
         Ok(())
     }
 
     fn lookup(&mut self, _req: &fuse::Request, _parent: u64, _name: &std::ffi::OsStr, reply: fuse::ReplyEntry) {
-        let _ino = if _parent == FUSE_ROOT_ID {2} else {_parent};
+        let _ino = translate_inode(_parent);
 
         let block_info = self.get_inode(_ino).unwrap();
         for dirent in self.get_valid_dirents(&block_info) {
@@ -169,23 +246,27 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     }
 
     fn getattr(&mut self, _req: &fuse::Request, orig_ino: u64, reply: fuse::ReplyAttr) {
-        let _ino = if orig_ino == FUSE_ROOT_ID {2} else {orig_ino};
+        let _ino = translate_inode(orig_ino);
         let block_info = self.get_inode(_ino).unwrap();
 
         reply.attr(&in_one_sec(), &block_info.to_fileattr(orig_ino))
     }
 
-    fn mknod(&mut self, _req: &Request, _parent: u64, _name: &OsStr, _mode: u32, _rdev: u32, reply: ReplyEntry) {
+    /*
+    fn mknod(&mut self, _req: &Request, _orig_parent: u64, _name: &OsStr, _mode: u32, _rdev: u32, reply: ReplyEntry) {
+        let _parent = translate_inode(_orig_parent);
         todo!()
     }
+     */
 
-    fn mkdir(&mut self, _req: &Request, _parent: u64, _name: &OsStr, _mode: u32, reply: ReplyEntry) {
+    fn mkdir(&mut self, _req: &Request, _orig_parent: u64, _name: &OsStr, _mode: u32, reply: ReplyEntry) {
+        let _parent = translate_inode(_orig_parent);
         if _name.as_bytes().len() > 27 {
             reply.error(ENAMETOOLONG);
             return;
         }
 
-        let parent_inode = self.get_inode(_parent).unwrap();
+        let mut parent_inode = self.get_inode(_parent).unwrap();
         let parent_dirents = self.get_dirents_incl_gaps(&parent_inode);
         let first_free_parent_dirent_idx = parent_dirents.iter().enumerate().find(|(_, de)| de.is_err()).map(|(idx, _)| idx).unwrap_or(parent_dirents.len());
 
@@ -212,8 +293,11 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
                     mtime: now_sec as u32
                 };
 
-                let ino_data: Vec<u8> = new_inode.into();
-                self.block_system.block_write(&ino_data, newdir_inode_blknum as usize).unwrap();
+                let ino_data: Vec<u8> = new_inode.clone().into();
+                if let Err(e) = self.block_system.block_write(&ino_data, newdir_inode_blknum as usize){
+                    reply.error(translate_error(e.kind()));
+                    return;
+                }
 
                 let dirent = DirectoryEntry{
                     inode_ptr: newdir_inode_blknum as u32,
@@ -221,24 +305,38 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
                 };
 
                 let dirent_data: Vec<u8> = dirent.into();
-                self.write_to_file(&parent_inode, &dirent_data, first_free_parent_dirent_idx*32);
+                if let Err(e) = self.write_file_data(&mut parent_inode, first_free_parent_dirent_idx*32, &dirent_data){
+                    reply.error(translate_error(e.kind()));
+                    return;
+                }
+
+                let parent_inode_data : Vec<u8> = parent_inode.into();
+                if let Err(e) = self.block_system.block_write(&parent_inode_data, _parent as usize){
+                    reply.error(translate_error(e.kind()));
+                    return;
+                }
+
                 reply.entry(&in_one_sec(), &new_inode.to_fileattr(newdir_inode_blknum as u64), 0)
             }
             Err(e) => {
-                reply.error(ENOSPC)
+                reply.error(translate_error(e.kind()))
             }
         }
     }
 
-    fn read(&mut self, _req: &Request, _ino: u64, _fh: u64, _offset: i64, _size: u32, reply: ReplyData) {
+    fn read(&mut self, _req: &Request, _orig_ino: u64, _fh: u64, _offset: i64, _size: u32, reply: ReplyData) {
+        let _ino = translate_inode(_orig_ino);
         let block_info = self.get_inode(_ino).unwrap();
         let data = self.read_file_bytes(&block_info, _offset as usize, _size as usize);
         reply.data(&data)
     }
 
-    fn write(&mut self, _req: &Request, _ino: u64, _fh: u64, _offset: i64, _data: &[u8], _flags: u32, reply: ReplyWrite) {
+    /*
+    fn write(&mut self, _req: &Request, _orig_ino: u64, _fh: u64, _offset: i64, _data: &[u8], _flags: u32, reply: ReplyWrite) {
+        let _ino = translate_inode(_orig_ino);
         todo!()
     }
+     */
 
     fn readdir(&mut self, _req: &fuse::Request, _ino: u64, _fh: u64, _offset: i64, mut reply: fuse::ReplyDirectory) {
         let _ino = if _ino == FUSE_ROOT_ID {2} else {_ino};
