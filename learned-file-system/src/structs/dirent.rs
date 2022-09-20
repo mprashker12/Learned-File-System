@@ -1,6 +1,7 @@
 use std::ffi::{CString, OsString};
 use std::num::NonZeroU8;
 use std::ops::Deref;
+use std::os::unix::ffi::OsStrExt;
 use crate::FS_BLOCK_SIZE;
 
 pub struct DirectoryBlock {
@@ -29,5 +30,16 @@ impl TryFrom<&[u8]> for DirectoryEntry{
         } else {
             Err(())
         }
+    }
+}
+
+impl Into<Vec<u8>> for DirectoryEntry{
+    fn into(self) -> Vec<u8> {
+        let dest = vec![0u8; 32];
+        dest[0..4].copy_from_slice(&self.inode_ptr.to_le_bytes());
+        for (ch_idx, ch) in self.name.as_bytes().iter().enumerate().take(27){
+            dest[4+ch_idx] = *ch
+        }
+        dest
     }
 }

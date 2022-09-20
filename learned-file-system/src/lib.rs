@@ -18,6 +18,7 @@ use libc::{EEXIST, ENAMETOOLONG, ENOENT, ENOSPC};
 use structs::dirent::DirectoryEntry;
 use structs::fsinode::FSINode;
 use structs::superblock::FsSuperBlock;
+use crate::structs::fsinode::NUM_POINTERS;
 use crate::utils::div_ceil;
 
 
@@ -202,7 +203,7 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
                 let now_sec = get_time().sec;
 
                 let new_inode = FSINode {
-                    pointers: vec![],
+                    pointers: [0u32; NUM_POINTERS],
                     size: FS_BLOCK_SIZE as u32,
                     uid: _req.uid() as u16,
                     gid: _req.gid() as u16,
@@ -212,7 +213,7 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
                 };
 
                 let ino_data: Vec<u8> = new_inode.into();
-                self.block_system.block_write(&ino_data, newdir_inode_blknum).unwrap();
+                self.block_system.block_write(&ino_data, newdir_inode_blknum as usize).unwrap();
 
                 let dirent = DirectoryEntry{
                     inode_ptr: newdir_inode_blknum as u32,

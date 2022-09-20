@@ -2,6 +2,8 @@ use fuse::FileAttr;
 use fuse::FileType::{Directory, RegularFile};
 use crate::{div_ceil, FS_BLOCK_SIZE};
 
+pub const NUM_POINTERS: usize = ((FS_BLOCK_SIZE - 20)/4) as usize;
+
 pub struct FSINode {
     pub uid: u16,
     pub gid: u16,
@@ -9,7 +11,7 @@ pub struct FSINode {
     pub ctime: u32,
     pub mtime: u32,
     pub size: u32,
-    pub pointers: Vec<u32> // [u32; ((FS_BLOCK_SIZE - 20)/4) as usize],
+    pub pointers: [u32; NUM_POINTERS],
 }
 
 impl FSINode{
@@ -48,12 +50,34 @@ impl From<&[u8]> for FSINode {
         let size = u32::from_le_bytes(crate::slice_to_four_bytes(&inode_bytes[16..20]));
 
 
-        let pointers = inode_bytes[20..].chunks_exact(4)
+        let mut pointers = [0u32; NUM_POINTERS];
+        let pointer_vec: Vec<u32> = inode_bytes[20..].chunks_exact(4)
             .map(|chunk| u32::from_le_bytes(crate::slice_to_four_bytes(chunk)))
             .collect();
+
+        pointers.copy_from_slice(&pointer_vec);
 
         FSINode{
             uid, gid, mode, ctime, mtime, size, pointers,
         }
+    }
+}
+
+impl Into<Vec<u8>> for FSINode{
+    fn into(self) -> Vec<u8> {
+        let mut dest = vec![0u8; FS_BLOCK_SIZE];
+        dest[0..2].copy_from_slice(&self.uid.to_le_bytes());
+        dest[2..4].copy_from_slice(&self.gid.to_le_bytes());
+        dest[4..8].copy_from_slice(&self.mode.to_le_bytes());
+        dest[8..12].copy_from_slice(&self.ctime.to_le_bytes());
+        dest[12..16].copy_from_slice(&self.mtime.to_le_bytes());
+        dest[16..20].copy_from_slice(&self.size.to_le_bytes());
+
+        for (ptr_idx, ptr_val) in self.pointers.iter().enumerate() {
+            let dest_idx = 20 + (ptr_idx * 4);
+            dest[dest_idx..(dest_idx+4)].copy_from_slice(&ptr_val.to_le_bytes());
+        }
+
+        dest
     }
 }
