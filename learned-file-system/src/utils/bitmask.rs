@@ -28,16 +28,14 @@ impl AsRef<[u8]> for BitMaskBlock{
 impl BitMaskBlock {
     pub fn new(num_blocks: usize, bit_mask_bytes: &[u8]) -> Self {
         let mut bit_mask = [0u8; FS_BLOCK_SIZE as usize];
-        for (index, byte) in bit_mask_bytes.iter().enumerate() {
-            bit_mask[index] = *byte;
-        }
+        bit_mask.copy_from_slice(bit_mask_bytes);
 
         let mut free_indices = BTreeSet::<u32>::new();
 
         for index in 0..num_blocks {
             let bit_map_idx = index / 8;
             let bit_map_bit_idx = index % 8;
-            if (bit_mask[bit_map_idx] >> (7 - bit_map_bit_idx)) & 1 == 0{
+            if (bit_mask[bit_map_idx] >> bit_map_bit_idx) & 1 == 0{
                 free_indices.insert(index as u32);
             }
         }

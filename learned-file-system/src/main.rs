@@ -4,7 +4,7 @@ use std::ffi::OsStr;
 use std::process::exit;
 use learned_file_system::LearnedFileSystem;
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 
 use learned_file_system::utils::block_file::BlockFileWrapper;
 
@@ -22,7 +22,7 @@ fn main() {
     }
 
     let image_name = args.get(2).unwrap();
-    let image = File::open(image_name).unwrap();
+    let image = OpenOptions::new().read(true).write(true).open(image_name).unwrap();
     let block_device = BlockFileWrapper::new(BLOCK_SIZE, image);
 
     let mountpoint = args.get(3).unwrap();

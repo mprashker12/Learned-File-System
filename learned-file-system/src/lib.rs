@@ -132,11 +132,19 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
             self.write_file_chunk(file, logical_blk_num, offset, data_chunk)?;
         }
 
+        file.size = file.size.max(file_ptr as u32);
+
         Ok(total_byte_writes_queued)
     }
 
     fn read_file_chunk(&self, file: &FSINode, block_num_in_file: usize, offset: usize, mut dest: &mut [u8]){
         let disk_blknum = file.pointers[block_num_in_file] as usize;
+
+        if disk_blknum == 0 { // Handle sparse/unallocated blocks
+            dest.fill(0);
+            return;
+        }
+
         let len = dest.len();
 
         if offset + len > FS_BLOCK_SIZE {
@@ -198,7 +206,8 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
         let first_n_blocks : Vec<u32> = self.block_allocation_bitmask.free_block_iter().take(num_blocks).collect();
         if first_n_blocks.len() == num_blocks {
             for block in first_n_blocks.iter(){
-                self.block_allocation_bitmask.set_bit(*block)
+                self.block_allocation_bitmask.set_bit(*block);
+                self.block_system.block_write(&[0;FS_BLOCK_SIZE], *block as usize)?;
             }
             self.block_system.block_write(&self.block_allocation_bitmask, self.bit_mask_block_index)?;
             Ok(first_n_blocks)
@@ -285,7 +294,7 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
 
                 let new_inode = FSINode {
                     pointers: [0u32; NUM_POINTERS],
-                    size: FS_BLOCK_SIZE as u32,
+                    size: 0,
                     uid: _req.uid() as u16,
                     gid: _req.gid() as u16,
                     mode: _mode,
