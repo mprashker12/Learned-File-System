@@ -8,46 +8,21 @@ use std::os::raw::c_int;
 use std::collections::BTreeSet;
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::io::{Error, ErrorKind};
-use std::io::ErrorKind::{Other, OutOfMemory, StorageFull};
+use std::io::ErrorKind::{Other, OutOfMemory};
 use std::num::NonZeroU8;
 use std::ops::{Add, Deref};
 use std::os::unix::ffi::OsStrExt;
 use fuse::FileType::{Directory, RegularFile};
 use crate::utils::block_file::BlockFile;
-use libc::{ENOENT, EEXIST, ENAMETOOLONG, ENOSPC};
+use libc::{EEXIST, ENAMETOOLONG, ENOENT, ENOSPC};
+use structs::dirent::DirectoryEntry;
+use structs::fsinode::FSINode;
+use structs::superblock::FsSuperBlock;
 use crate::utils::div_ceil;
 
 
 const FS_BLOCK_SIZE: usize = 4096;
 const FS_MAGIC_NUM: u32 = 0x30303635;
-
-/// Block of the file system with inumber 0
-/// Records meta-data about the entire file system
-pub struct FsSuperBlock {
-    magic: u32,
-    disk_size: u32,
-}
-
-pub struct FSINode {
-    pub uid: u16,
-    pub gid: u16,
-    pub mode: u32,
-    pub ctime: u32,
-    pub mtime: u32,
-    pub size: u32,
-    pub pointers: Vec<u32> // [u32; ((FS_BLOCK_SIZE - 20)/4) as usize],
-}
-
-
-
-pub struct DirectoryBlock {
-    directory_entries: [DirectoryEntry; (FS_BLOCK_SIZE/4)],
-}
-
-pub struct DirectoryEntry {
-    pub inode_ptr: u32,
-    pub name: OsString,
-}
 
 
 pub struct LearnedFileSystem <BF : BlockFile> {
@@ -55,31 +30,6 @@ pub struct LearnedFileSystem <BF : BlockFile> {
     block_allocation_bitmask: BitMaskBlock,
     super_block_index: usize,
     bit_mask_block_index: usize,
-}
-
-impl FSINode{
-    fn to_fileattr(&self, node_num: u64) -> FileAttr {
-        let dir_mask = 0o40000;
-
-        let ftype = if self.mode & dir_mask != 0 { Directory } else { RegularFile };
-
-        FileAttr{
-            ino: node_num,
-            uid: self.uid as u32,
-            gid: self.gid as u32,
-            mtime: time_to_timespec(self.mtime),
-            ctime: time_to_timespec(self.ctime),
-            crtime: time_to_timespec(self.ctime),
-            atime: time_to_timespec(self.mtime),
-            size: self.size as u64,
-            blocks: div_ceil(self.size as u64, FS_BLOCK_SIZE as u64),
-            nlink: 1,
-            rdev: 0,
-            flags: 0,
-            kind: ftype,
-            perm: self.mode as u16
-        }
-    }
 }
 
 impl <BF: BlockFile>  LearnedFileSystem<BF> {
@@ -315,56 +265,6 @@ fn slice_to_four_bytes(arr: &[u8]) -> [u8;4] {
 
 fn slice_to_two_bytes(arr: &[u8]) -> [u8;2] {
     [arr[0], arr[1]]
-}
-
-impl From<&[u8]> for FsSuperBlock {
-    fn from(super_block_bytes: &[u8]) -> Self {
-        let magic = u32::from_le_bytes(slice_to_four_bytes(&super_block_bytes[0..4]));
-        let disk_size = u32::from_le_bytes(slice_to_four_bytes(&super_block_bytes[4..8]));
-        FsSuperBlock { magic, disk_size }
-    }
-}
-
-
-
-impl From<&[u8]> for FSINode {
-    fn from(inode_bytes: &[u8]) -> Self {
-        let uid =  u16::from_le_bytes(slice_to_two_bytes(&inode_bytes[0..2]));
-        let gid =  u16::from_le_bytes(slice_to_two_bytes(&inode_bytes[2..4]));
-        let mode = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[4..8]));
-        let ctime = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[8..12]));
-        let mtime = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[12..16]));
-        let size = u32::from_le_bytes(slice_to_four_bytes(&inode_bytes[16..20]));
-
-
-        let pointers = inode_bytes[20..].chunks_exact(4)
-            .map(|chunk| u32::from_le_bytes(slice_to_four_bytes(chunk)))
-            .collect();
-
-        FSINode{
-            uid, gid, mode, ctime, mtime, size, pointers,
-        }
-    }
-}
-
-impl TryFrom<&[u8]> for DirectoryEntry{
-
-    type Error = ();
-
-    fn try_from(dirent: &[u8]) -> Result<Self, Self::Error> {
-        let valid = dirent[0] & 0x01 != 0;
-        if valid {
-            let inode_ptr = u32::from_le_bytes(slice_to_four_bytes(&dirent[0..4])) >> 1; // Compensate for the valid bit
-            let name_nonzero: Vec<NonZeroU8> = dirent[4..32].iter().map_while(|ch| NonZeroU8::new(*ch)).collect();
-            let cname = CString::from(name_nonzero);
-            let name = OsString::from(cname.to_string_lossy().deref());
-            Ok(DirectoryEntry{
-                inode_ptr, name
-            })
-        } else {
-            Err(())
-        }
-    }
 }
 
 fn time_to_timespec(time: u32) -> Timespec{

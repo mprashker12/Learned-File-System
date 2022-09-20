@@ -1,0 +1,59 @@
+use fuse::FileAttr;
+use fuse::FileType::{Directory, RegularFile};
+use crate::{div_ceil, FS_BLOCK_SIZE};
+
+pub struct FSINode {
+    pub uid: u16,
+    pub gid: u16,
+    pub mode: u32,
+    pub ctime: u32,
+    pub mtime: u32,
+    pub size: u32,
+    pub pointers: Vec<u32> // [u32; ((FS_BLOCK_SIZE - 20)/4) as usize],
+}
+
+impl FSINode{
+    pub fn to_fileattr(&self, node_num: u64) -> FileAttr {
+        let dir_mask = 0o40000;
+
+        let ftype = if self.mode & dir_mask != 0 { Directory } else { RegularFile };
+
+        FileAttr{
+            ino: node_num,
+            uid: self.uid as u32,
+            gid: self.gid as u32,
+            mtime: crate::time_to_timespec(self.mtime),
+            ctime: crate::time_to_timespec(self.ctime),
+            crtime: crate::time_to_timespec(self.ctime),
+            atime: crate::time_to_timespec(self.mtime),
+            size: self.size as u64,
+            blocks: div_ceil(self.size as u64, FS_BLOCK_SIZE as u64),
+            nlink: 1,
+            rdev: 0,
+            flags: 0,
+            kind: ftype,
+            perm: self.mode as u16
+        }
+    }
+}
+
+
+impl From<&[u8]> for FSINode {
+    fn from(inode_bytes: &[u8]) -> Self {
+        let uid =  u16::from_le_bytes(crate::slice_to_two_bytes(&inode_bytes[0..2]));
+        let gid =  u16::from_le_bytes(crate::slice_to_two_bytes(&inode_bytes[2..4]));
+        let mode = u32::from_le_bytes(crate::slice_to_four_bytes(&inode_bytes[4..8]));
+        let ctime = u32::from_le_bytes(crate::slice_to_four_bytes(&inode_bytes[8..12]));
+        let mtime = u32::from_le_bytes(crate::slice_to_four_bytes(&inode_bytes[12..16]));
+        let size = u32::from_le_bytes(crate::slice_to_four_bytes(&inode_bytes[16..20]));
+
+
+        let pointers = inode_bytes[20..].chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(crate::slice_to_four_bytes(chunk)))
+            .collect();
+
+        FSINode{
+            uid, gid, mode, ctime, mtime, size, pointers,
+        }
+    }
+}
