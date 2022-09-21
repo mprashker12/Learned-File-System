@@ -282,12 +282,9 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         reply.attr(&in_one_sec(), &block_info.to_fileattr(orig_ino))
     }
 
-    /*
     fn mknod(&mut self, _req: &Request, _orig_parent: u64, _name: &OsStr, _mode: u32, _rdev: u32, reply: ReplyEntry) {
-        let _parent = translate_inode(_orig_parent);
-        todo!()
+        self.mkdir(_req, _orig_parent, _name, _mode, reply) // Dir vs file is controlled by _mode
     }
-     */
 
     fn setattr(&mut self, _req: &Request, _ino: u64, _mode: Option<u32>, _uid: Option<u32>, _gid: Option<u32>, _size: Option<u64>, _atime: Option<Timespec>, _mtime: Option<Timespec>, _fh: Option<u64>, _crtime: Option<Timespec>, _chgtime: Option<Timespec>, _bkuptime: Option<Timespec>, _flags: Option<u32>, reply: ReplyAttr) {
         let _ino = translate_inode(_ino);
@@ -485,6 +482,38 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         let block_info = self.get_inode(_ino).unwrap();
         let data = self.read_file_bytes(&block_info, _offset as usize, _size as usize);
         reply.data(&data)
+    }
+
+    fn unlink(&mut self, _req: &Request, _parent: u64, _name: &OsStr, reply: ReplyEmpty) {
+        let _parent = translate_inode(_parent);
+        if _parent == 2 {
+            reply.error(EIO);
+            return;
+        }
+
+        let mut old_parent_info = self.get_inode(_parent).unwrap();
+        let old_parent_dirents = self.get_dirents_incl_gaps(&old_parent_info);
+
+        match self.find_dirent_in_list(&old_parent_dirents, _name) {
+            Some((old_de_idx, mut dirent)) => {
+                let mut blk_info = self.get_inode(dirent.inode_ptr as u64).unwrap();
+                self.truncate_to_num_blocks(&mut blk_info, 0).expect("Could not truncate file");
+
+                self.free_blocks(&vec![dirent.inode_ptr as u32]).expect("Could not free blocks");
+
+                if let Err(e) = self.write_file_data(&mut old_parent_info, old_de_idx * 32, &[0u8; 32]) {
+                    reply.error(translate_error(e.kind()));
+                    return;
+                }
+
+                reply.ok();
+            },
+            None => {
+                reply.error(ENOENT);
+                return;
+            }
+        }
+
     }
 
     fn write(&mut self, _req: &Request, _orig_ino: u64, _fh: u64, _offset: i64, _data: &[u8], _flags: u32, reply: ReplyWrite) {
