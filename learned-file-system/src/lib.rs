@@ -59,12 +59,12 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
 
      /// Read Bitmask block from disk, clear all bits given, and write bitmask
      /// block back to disk
-    pub fn free_blocks(&mut self, block_indices: Vec<u32>) -> std::io::Result<()> {
+    pub fn free_blocks(&mut self, block_indices: &Vec<u32>) -> std::io::Result<()> {
         for block_index in block_indices.iter() {
             if self.block_allocation_bitmask.is_free(*block_index) {return Err(Error::from(Other));}
         }
-        for block_index in block_indices {
-            self.block_allocation_bitmask.clear_bit(block_index);
+        for block_index in block_indices.iter() {
+            self.block_allocation_bitmask.clear_bit(*block_index);
         }
 
         self.block_system.block_write(&self.block_allocation_bitmask, self.bit_mask_block_index)?;
@@ -235,6 +235,18 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
     fn first_free_dirent_idx(&self, dirent_incl_gaps: &Vec<Result<DirectoryEntry, ()>>) -> usize {
         dirent_incl_gaps.iter().enumerate().find(|(_, de)| de.is_err()).map(|(idx, _)| idx).unwrap_or(dirent_incl_gaps.len())
     }
+
+    fn truncate_to_num_blocks(&mut self, node: &mut FSINode, num_blocks: u32) -> std::io::Result<()> {
+        let mut blocks_to_dealloc = vec![];
+        for block_ptr in node.pointers.iter_mut().skip(num_blocks as usize){
+            if *block_ptr != 0 {
+                blocks_to_dealloc.push(*block_ptr);
+                *block_ptr = 0;
+            }
+        }
+
+        self.free_blocks(&blocks_to_dealloc)
+    }
 }
 
 //Main Implementations of the File System for LearnedFileSystem
@@ -276,6 +288,55 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         todo!()
     }
      */
+
+    fn setattr(&mut self, _req: &Request, _ino: u64, _mode: Option<u32>, _uid: Option<u32>, _gid: Option<u32>, _size: Option<u64>, _atime: Option<Timespec>, _mtime: Option<Timespec>, _fh: Option<u64>, _crtime: Option<Timespec>, _chgtime: Option<Timespec>, _bkuptime: Option<Timespec>, _flags: Option<u32>, reply: ReplyAttr) {
+        let _ino = translate_inode(_ino);
+
+        let mut block_info = self.get_inode(_ino).unwrap();
+
+        if let Some(newmode) = _mode{
+            block_info.mode = newmode;
+        }
+
+        if let Some(newuid) = _uid {
+            block_info.uid = newuid as u16;
+        }
+
+        if let Some(newgid) = _gid {
+            block_info.gid = newgid as u16;
+        }
+
+        if let Some(newsize) = _size {
+            // If newsize is large, we don't need to worry since we'll just get a sparse file.
+            // Subsequent reads will just return 0s for those indices
+            if newsize < block_info.size as u64 {
+                let new_num_blocks = div_ceil(newsize, FS_BLOCK_SIZE as u64);
+                if let Err(e) = self.truncate_to_num_blocks(&mut block_info, new_num_blocks as u32).map_err(|e| translate_error(e.kind())){
+                    reply.error(e);
+                    return;
+                }
+            }
+            block_info.size = newsize as u32;
+        }
+
+        if let Some(new_mtime) = _mtime{
+            block_info.mtime = new_mtime.sec as u32;
+        }
+
+        if let Some(new_ctime) = _chgtime {
+            block_info.ctime = new_ctime.sec as u32;
+        }
+
+        let newattr = block_info.to_fileattr(_ino);
+
+        let blkdata: Vec<u8> = block_info.into();
+
+        if let Err(e) = self.block_system.block_write(&blkdata, _ino as usize){
+            reply.error(translate_error(e.kind()));
+            return;
+        }
+        reply.attr(&in_one_sec(), &newattr);
+    }
 
     fn mkdir(&mut self, _req: &Request, _orig_parent: u64, _name: &OsStr, _mode: u32, reply: ReplyEntry) {
         let _parent = translate_inode(_orig_parent);
@@ -338,13 +399,6 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
                 reply.error(translate_error(e.kind()))
             }
         }
-    }
-
-    fn read(&mut self, _req: &Request, _orig_ino: u64, _fh: u64, _offset: i64, _size: u32, reply: ReplyData) {
-        let _ino = translate_inode(_orig_ino);
-        let block_info = self.get_inode(_ino).unwrap();
-        let data = self.read_file_bytes(&block_info, _offset as usize, _size as usize);
-        reply.data(&data)
     }
 
     fn rename(&mut self, _req: &Request, _parent: u64, _name: &OsStr, _newparent: u64, _newname: &OsStr, reply: ReplyEmpty) {
@@ -424,6 +478,13 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
                 reply.error(ENOENT);
             }
         }
+    }
+
+    fn read(&mut self, _req: &Request, _orig_ino: u64, _fh: u64, _offset: i64, _size: u32, reply: ReplyData) {
+        let _ino = translate_inode(_orig_ino);
+        let block_info = self.get_inode(_ino).unwrap();
+        let data = self.read_file_bytes(&block_info, _offset as usize, _size as usize);
+        reply.data(&data)
     }
 
     fn write(&mut self, _req: &Request, _orig_ino: u64, _fh: u64, _offset: i64, _data: &[u8], _flags: u32, reply: ReplyWrite) {

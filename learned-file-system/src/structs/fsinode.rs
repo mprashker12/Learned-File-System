@@ -30,7 +30,7 @@ impl FSINode{
             crtime: crate::time_to_timespec(self.ctime),
             atime: crate::time_to_timespec(self.mtime),
             size: self.size as u64,
-            blocks: div_ceil(self.size as u64, FS_BLOCK_SIZE as u64),
+            blocks: self.pointers.clone().into_iter().filter(|ptr| *ptr != 0).sum::<u32>() as u64, // Because the file might be sparse
             nlink: 1,
             rdev: 0,
             flags: 0,
