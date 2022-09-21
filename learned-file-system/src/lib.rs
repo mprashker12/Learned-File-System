@@ -14,7 +14,7 @@ use std::ops::{Add, Deref};
 use std::os::unix::ffi::OsStrExt;
 use fuse::FileType::{Directory, RegularFile};
 use crate::utils::block_file::BlockFile;
-use libc::{EEXIST, EIO, ENAMETOOLONG, ENOENT, ENOSPC};
+use libc::{EEXIST, EIO, EISDIR, ENAMETOOLONG, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
 use structs::dirent::DirectoryEntry;
 use structs::fsinode::FSINode;
 use structs::superblock::FsSuperBlock;
@@ -39,6 +39,10 @@ fn translate_error(e : ErrorKind) -> c_int{
         ErrorKind::AlreadyExists => EEXIST,
         _ => EIO
     }
+}
+
+fn translate_io_error(e: std::io::Error) -> c_int{
+    translate_error(e.kind())
 }
 
 fn translate_inode(ino: u64) -> u64{
@@ -246,6 +250,46 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
         }
 
         self.free_blocks(&blocks_to_dealloc)
+    }
+
+    fn do_unlink(&mut self, _parent: u64, _name: &OsStr, is_dir: bool) -> Result<(), c_int> {
+        let _parent = translate_inode(_parent);
+
+        let mut old_parent_info = self.get_inode(_parent).unwrap();
+        let old_parent_dirents = self.get_dirents_incl_gaps(&old_parent_info);
+
+        match self.find_dirent_in_list(&old_parent_dirents, _name) {
+            Some((old_de_idx, mut dirent)) => {
+                let mut blk_info = self.get_inode(dirent.inode_ptr as u64).unwrap();
+
+                if is_dir {
+                    if blk_info.to_fileattr(_parent).kind != Directory {
+                        return Result::Err(ENOTDIR)
+                    }
+
+                    if self.get_valid_dirents(&blk_info).len() > 0 {
+                        return Result::Err(ENOTEMPTY);
+                    }
+                } else {
+                    if blk_info.to_fileattr(_parent).kind == Directory {
+                        return Result::Err(EISDIR);
+                    }
+                }
+
+                self.truncate_to_num_blocks(&mut blk_info, 0).map_err(translate_io_error)?;
+
+                self.free_blocks(&vec![dirent.inode_ptr as u32]).map_err(translate_io_error)?;
+
+                self.write_file_data(&mut old_parent_info, old_de_idx * 32, &[0u8; 32]).map_err(translate_io_error)?;
+
+                let parent_inode_data: Vec<u8> = old_parent_info.into();
+                self.block_system.block_write(&parent_inode_data, _parent as usize).map_err(translate_io_error)?;
+                Ok(())
+            },
+            None => {
+                Err(ENOENT)
+            }
+        }
     }
 }
 
@@ -484,32 +528,18 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         reply.data(&data)
     }
 
-    fn unlink(&mut self, _req: &Request, _parent: u64, _name: &OsStr, reply: ReplyEmpty) {
-        let _parent = translate_inode(_parent);
-
-        let mut old_parent_info = self.get_inode(_parent).unwrap();
-        let old_parent_dirents = self.get_dirents_incl_gaps(&old_parent_info);
-
-        match self.find_dirent_in_list(&old_parent_dirents, _name) {
-            Some((old_de_idx, mut dirent)) => {
-                let mut blk_info = self.get_inode(dirent.inode_ptr as u64).unwrap();
-                self.truncate_to_num_blocks(&mut blk_info, 0).expect("Could not truncate file");
-
-                self.free_blocks(&vec![dirent.inode_ptr as u32]).expect("Could not free blocks");
-
-                if let Err(e) = self.write_file_data(&mut old_parent_info, old_de_idx * 32, &[0u8; 32]) {
-                    reply.error(translate_error(e.kind()));
-                    return;
-                }
-
-                reply.ok();
-            },
-            None => {
-                reply.error(ENOENT);
-                return;
-            }
+    fn rmdir(&mut self, _req: &Request, _parent: u64, _name: &OsStr, reply: ReplyEmpty) {
+        match self.do_unlink(_parent, _name, true) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e)
         }
+    }
 
+    fn unlink(&mut self, _req: &Request, _parent: u64, _name: &OsStr, reply: ReplyEmpty) {
+        match self.do_unlink(_parent, _name, false) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e)
+        }
     }
 
     fn write(&mut self, _req: &Request, _orig_ino: u64, _fh: u64, _offset: i64, _data: &[u8], _flags: u32, reply: ReplyWrite) {

@@ -68,7 +68,7 @@ impl BitMaskBlock {
         }
         let byte_index = index/8;
         let byte_offset = index%8;
-        self.bit_mask[byte_index as usize] &= 0 << byte_offset;
+        self.bit_mask[byte_index as usize] &= !(1u8 << (byte_offset));
         self.free_indices.insert(index);
     }
 
