@@ -2,7 +2,7 @@ pub mod utils;
 mod structs;
 
 use time::{Duration, get_time, Timespec};
-use fuse::{FileAttr, Filesystem, FileType, FUSE_ROOT_ID, ReplyData, ReplyEmpty, ReplyEntry, ReplyWrite, Request};
+use fuse::{FileAttr, Filesystem, FileType, FUSE_ROOT_ID, ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyWrite, Request};
 use utils::bitmask::BitMaskBlock;
 use std::os::raw::c_int;
 use std::collections::BTreeSet;
@@ -426,12 +426,24 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         }
     }
 
-    /*
     fn write(&mut self, _req: &Request, _orig_ino: u64, _fh: u64, _offset: i64, _data: &[u8], _flags: u32, reply: ReplyWrite) {
         let _ino = translate_inode(_orig_ino);
-        todo!()
+
+        let mut block_info = self.get_inode(_ino).unwrap();
+
+        match self.write_file_data(&mut block_info, _offset as usize, _data){
+            Err(e) => {reply.error(translate_error(e.kind()))},
+            Ok(bytes_written) => {
+                let parent_inode_data : Vec<u8> = block_info.into();
+                if let Err(e) = self.block_system.block_write(&parent_inode_data, _ino as usize){
+                    reply.error(translate_error(e.kind()));
+                    return;
+                }
+
+                reply.written(bytes_written as u32);
+            }
+        }
     }
-     */
 
     fn readdir(&mut self, _req: &fuse::Request, _ino: u64, _fh: u64, _offset: i64, mut reply: fuse::ReplyDirectory) {
         let _ino = if _ino == FUSE_ROOT_ID {2} else {_ino};
@@ -450,7 +462,6 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
                      self.block_allocation_bitmask.num_free_indices() as u64, FS_BLOCK_SIZE as u32, 27,
                      FS_BLOCK_SIZE as u32);
     }
-
 }
 
 fn slice_to_four_bytes(arr: &[u8]) -> [u8;4] {
