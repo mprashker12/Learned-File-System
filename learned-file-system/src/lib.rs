@@ -486,10 +486,6 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
 
     fn unlink(&mut self, _req: &Request, _parent: u64, _name: &OsStr, reply: ReplyEmpty) {
         let _parent = translate_inode(_parent);
-        if _parent == 2 {
-            reply.error(EIO);
-            return;
-        }
 
         let mut old_parent_info = self.get_inode(_parent).unwrap();
         let old_parent_dirents = self.get_dirents_incl_gaps(&old_parent_info);
