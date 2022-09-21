@@ -8,6 +8,7 @@ pub struct DirectoryBlock {
     pub directory_entries: [DirectoryEntry; (FS_BLOCK_SIZE/4)],
 }
 
+#[derive(Clone)]
 pub struct DirectoryEntry {
     pub inode_ptr: u32,
     pub name: OsString,

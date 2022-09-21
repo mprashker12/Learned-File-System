@@ -2,7 +2,7 @@ pub mod utils;
 mod structs;
 
 use time::{Duration, get_time, Timespec};
-use fuse::{FileAttr, Filesystem, FileType, FUSE_ROOT_ID, ReplyData, ReplyEntry, ReplyWrite, Request};
+use fuse::{FileAttr, Filesystem, FileType, FUSE_ROOT_ID, ReplyData, ReplyEmpty, ReplyEntry, ReplyWrite, Request};
 use utils::bitmask::BitMaskBlock;
 use std::os::raw::c_int;
 use std::collections::BTreeSet;
@@ -224,6 +224,17 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
     fn get_valid_dirents(&self, block_info: &FSINode) -> Vec<DirectoryEntry>{
         self.get_dirents_incl_gaps(block_info).into_iter().filter_map(Result::ok).collect()
     }
+
+    fn find_dirent_in_list(&self, dirents_incl_gaps: &Vec<Result<DirectoryEntry, ()>>, name: &OsStr) -> Option<(usize, DirectoryEntry)>{
+        dirents_incl_gaps.iter()
+            .enumerate()
+            .filter_map(|(idx, de)| de.clone().map(|de| (idx, de)).ok())
+            .find(|(idx, de)| de.name == name)
+    }
+
+    fn first_free_dirent_idx(&self, dirent_incl_gaps: &Vec<Result<DirectoryEntry, ()>>) -> usize {
+        dirent_incl_gaps.iter().enumerate().find(|(_, de)| de.is_err()).map(|(idx, _)| idx).unwrap_or(dirent_incl_gaps.len())
+    }
 }
 
 //Main Implementations of the File System for LearnedFileSystem
@@ -244,14 +255,12 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         let _ino = translate_inode(_parent);
 
         let block_info = self.get_inode(_ino).unwrap();
-        for dirent in self.get_valid_dirents(&block_info) {
-            if dirent.name == _name {
-                let element_block_info = FSINode::from(self.block_system.block_read(dirent.inode_ptr as usize).unwrap().as_slice());
-                reply.entry(&in_one_sec(), &element_block_info.to_fileattr(dirent.inode_ptr as u64), 0);
-                return;
-            }
+        if let Some((_, dirent)) = self.find_dirent_in_list(&self.get_dirents_incl_gaps(&block_info), _name){
+            let element_block_info = FSINode::from(self.block_system.block_read(dirent.inode_ptr as usize).unwrap().as_slice());
+            reply.entry(&in_one_sec(), &element_block_info.to_fileattr(dirent.inode_ptr as u64), 0);
+        } else{
+            reply.error(ENOENT);
         }
-        reply.error(ENOENT);
     }
 
     fn getattr(&mut self, _req: &fuse::Request, orig_ino: u64, reply: fuse::ReplyAttr) {
@@ -277,13 +286,11 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
 
         let mut parent_inode = self.get_inode(_parent).unwrap();
         let parent_dirents = self.get_dirents_incl_gaps(&parent_inode);
-        let first_free_parent_dirent_idx = parent_dirents.iter().enumerate().find(|(_, de)| de.is_err()).map(|(idx, _)| idx).unwrap_or(parent_dirents.len());
+        let first_free_parent_dirent_idx = self.first_free_dirent_idx(&parent_dirents);
 
-        for existing_dirent in parent_dirents.into_iter().filter_map(Result::ok){
-            if existing_dirent.name == _name {
-                reply.error(EEXIST);
-                return;
-            }
+        if let Some(_) = self.find_dirent_in_list(&parent_dirents, _name) {
+            reply.error(EEXIST);
+            return;
         }
 
         match self.allocate_blocks(1){
@@ -338,6 +345,85 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         let block_info = self.get_inode(_ino).unwrap();
         let data = self.read_file_bytes(&block_info, _offset as usize, _size as usize);
         reply.data(&data)
+    }
+
+    fn rename(&mut self, _req: &Request, _parent: u64, _name: &OsStr, _newparent: u64, _newname: &OsStr, reply: ReplyEmpty) {
+        let parent_ino = translate_inode(_parent);
+        let new_parent_ino = translate_inode(_newparent);
+
+        if _newname.as_bytes().len() > 27 {
+            reply.error(ENAMETOOLONG);
+            return;
+        }
+
+        let mut old_parent_info = self.get_inode(parent_ino).unwrap();
+        let old_parent_dirents = self.get_dirents_incl_gaps(&old_parent_info);
+
+        match self.find_dirent_in_list(&old_parent_dirents, _name){
+            Some((old_de_idx, mut dirent)) => {
+                dirent.name = OsString::from(_newname);
+
+                if new_parent_ino == parent_ino {
+                    if _newname == _name {
+                        reply.ok();
+                        return;
+                    }
+
+
+                    let dirent_data: Vec<u8> = dirent.into();
+                    if let Err(e) = self.write_file_data(&mut old_parent_info, old_de_idx*32, &dirent_data){
+                        reply.error(translate_error(e.kind()));
+                        return;
+                    }
+
+                    let parent_inode_data : Vec<u8> = old_parent_info.into();
+                    if let Err(e) = self.block_system.block_write(&parent_inode_data, parent_ino as usize){
+                        reply.error(translate_error(e.kind()));
+                        return;
+                    }
+
+                    reply.ok();
+                    return;
+                } else {
+                    let mut new_parent_info = self.get_inode(new_parent_ino).unwrap();
+                    let new_parent_dirents = self.get_dirents_incl_gaps(&new_parent_info);
+
+                    if let Some(_) = self.find_dirent_in_list(&new_parent_dirents, _name) {
+                        reply.error(EEXIST);
+                        return;
+                    }
+
+
+                    if let Err(e) = self.write_file_data(&mut old_parent_info, old_de_idx*32, &[0u8; 32]){
+                        reply.error(translate_error(e.kind()));
+                        return;
+                    }
+
+                    let parent_inode_data : Vec<u8> = old_parent_info.into();
+                    if let Err(e) = self.block_system.block_write(&parent_inode_data, parent_ino as usize){
+                        reply.error(translate_error(e.kind()));
+                        return;
+                    }
+
+                    let first_free_new_parent_dirent_idx = self.first_free_dirent_idx(&new_parent_dirents);
+                    let dirent_data: Vec<u8> = dirent.into();
+                    if let Err(e) = self.write_file_data(&mut new_parent_info, first_free_new_parent_dirent_idx*32, &dirent_data){
+                        reply.error(translate_error(e.kind()));
+                        return;
+                    }
+
+                    let new_parent_inode_data : Vec<u8> = new_parent_info.into();
+                    if let Err(e) = self.block_system.block_write(&new_parent_inode_data, new_parent_ino as usize){
+                        reply.error(translate_error(e.kind()));
+                        return;
+                    }
+                    reply.ok()
+                }
+            }
+            None => {
+                reply.error(ENOENT);
+            }
+        }
     }
 
     /*
