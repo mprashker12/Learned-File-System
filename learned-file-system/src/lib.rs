@@ -20,6 +20,7 @@ use structs::fsinode::FSINode;
 use structs::superblock::FsSuperBlock;
 use crate::structs::fsinode::NUM_POINTERS;
 use crate::utils::div_ceil;
+use log::debug;
 
 
 const FS_BLOCK_SIZE: usize = 4096;
@@ -313,6 +314,7 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         let block_info = self.get_inode(_ino).unwrap();
         if let Some((_, dirent)) = self.find_dirent_in_list(&self.get_dirents_incl_gaps(&block_info), _name){
             let element_block_info = FSINode::from(self.block_system.block_read(dirent.inode_ptr as usize).unwrap().as_slice());
+            debug!("Response: {:?}", element_block_info.to_fileattr(dirent.inode_ptr as u64));
             reply.entry(&in_one_sec(), &element_block_info.to_fileattr(dirent.inode_ptr as u64), 0);
         } else{
             reply.error(ENOENT);
@@ -323,6 +325,7 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         let _ino = translate_inode(orig_ino);
         let block_info = self.get_inode(_ino).unwrap();
 
+        debug!("Response: {:?}", block_info.to_fileattr(orig_ino));
         reply.attr(&in_one_sec(), &block_info.to_fileattr(orig_ino))
     }
 
@@ -336,18 +339,22 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         let mut block_info = self.get_inode(_ino).unwrap();
 
         if let Some(newmode) = _mode{
+            debug!("Setting mode {newmode:o}");
             block_info.mode = newmode;
         }
 
         if let Some(newuid) = _uid {
+            debug!("Setting uid {newuid}");
             block_info.uid = newuid as u16;
         }
 
         if let Some(newgid) = _gid {
+            debug!("Setting gid {newgid}");
             block_info.gid = newgid as u16;
         }
 
         if let Some(newsize) = _size {
+            debug!("Changing size from {} to {newsize}", block_info.size);
             // If newsize is large, we don't need to worry since we'll just get a sparse file.
             // Subsequent reads will just return 0s for those indices
             if newsize < block_info.size as u64 {
@@ -361,10 +368,12 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
         }
 
         if let Some(new_mtime) = _mtime{
+            debug!("Changing mtime {}", new_mtime.sec);
             block_info.mtime = new_mtime.sec as u32;
         }
 
         if let Some(new_ctime) = _chgtime {
+            debug!("Changing ctime {}", new_ctime.sec);
             block_info.ctime = new_ctime.sec as u32;
         }
 
@@ -433,7 +442,7 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
                     reply.error(translate_error(e.kind()));
                     return;
                 }
-
+                debug!("New file: {:?}", new_inode.to_fileattr(newdir_inode_blknum as u64));
                 reply.entry(&in_one_sec(), &new_inode.to_fileattr(newdir_inode_blknum as u64), 0)
             }
             Err(e) => {

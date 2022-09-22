@@ -1,5 +1,6 @@
 /// Block of the file system with inumber 0
 /// Records meta-data about the entire file system
+#[derive(Clone, Debug)]
 pub struct FsSuperBlock {
     pub magic: u32,
     pub disk_size: u32,
