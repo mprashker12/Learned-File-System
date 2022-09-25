@@ -27,9 +27,9 @@ pub trait block_reader {
 
 
 pub struct FsMinHeap<BR: block_reader> {
-    size: usize,
-    capacity: usize,
-    disk: Rc<RefCell<BR>>,
+    pub size: usize,
+    pub capacity: usize,
+    pub disk: Rc<RefCell<BR>>,
 }
 
 
