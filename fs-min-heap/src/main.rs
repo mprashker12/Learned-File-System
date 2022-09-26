@@ -79,7 +79,7 @@ fn write_vec(file_path: &str, data: &Vec<usize>) {
     let mut write_file = fs::File::create_new(file_path).unwrap();
     for i in data.iter() {
         write_file.write(i.to_string().as_bytes());
-        write_file.write("\n".as_bytes());
+        write_file.write(", ".as_bytes());
     }
 }
 
@@ -99,13 +99,12 @@ fn run_experiment_round(round_number: usize) {
 
     let mut path = "exp_results/".to_string();
     path.push_str(&round_number.to_string());
-    path.push_str(".txt");
+    path.push_str(".csv");
 
     write_vec(path.as_str(), &access_patterns);
 }
 
 fn main()  {
-
     for round_number in 1..100 {
         run_experiment_round(round_number);
     }
