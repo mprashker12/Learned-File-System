@@ -4,10 +4,12 @@ pub mod fs_min_heap;
 use fs_min_heap::{block_reader, FsMinHeap};
 
 use std::fmt::write;
+use std::ops::Add;
 use fs::File;
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::cell::RefCell;
+use rand::Rng;
 
 
 
@@ -66,13 +68,11 @@ pub fn basic_heap() {
     min_heap.insert(100);
     min_heap.insert(50);
     min_heap.insert(75);
-    min_heap.insert(24);
+    min_heap.insert(42);
     let x = min_heap.pop().unwrap();
     let y = min_heap.pop().unwrap();
-    println!("{}", x);
-    println!("{}", y);
-    let access_patterns = min_heap.disk.borrow().disk_accesses.borrow().clone();
-    write_vec("b.txt", &access_patterns);
+    assert_eq!(x, 42);
+    assert_eq!(y, 50);
 }
 
 fn write_vec(file_path: &str, data: &Vec<usize>) {
@@ -83,7 +83,30 @@ fn write_vec(file_path: &str, data: &Vec<usize>) {
     }
 }
 
-fn main() -> std::io::Result<()> {
-    fs::write("hello.txt", "hello")?;
-    Ok(())
+fn run_experiment_round(round_number: usize) {
+    let mut min_heap = FsMinHeap::<VecDisk>::new();
+    for _ in 0..1000 {
+        let num: usize = rand::thread_rng().gen_range(0..100);
+        min_heap.insert(num);
+    }
+    for _ in 0..1000 {
+        min_heap.pop();
+        let num = rand::thread_rng().gen_range(0..100);
+        min_heap.insert(num);
+    }
+
+    let access_patterns = min_heap.disk.borrow().disk_accesses.borrow().clone();
+
+    let mut path = "exp_results/".to_string();
+    path.push_str(&round_number.to_string());
+    path.push_str(".txt");
+
+    write_vec(path.as_str(), &access_patterns);
+}
+
+fn main()  {
+
+    for round_number in 1..100 {
+        run_experiment_round(round_number);
+    }
 }
