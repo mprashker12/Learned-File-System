@@ -563,6 +563,15 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     }
 
     fn write(&mut self, _req: &Request, _orig_ino: u64, _fh: u64, _offset: i64, _data: &[u8], _flags: u32, reply: ReplyWrite) {
+
+
+        //logging
+        let mut contents = String::from("W");
+        contents.push_str(_orig_ino.to_string().as_str());
+        contents.push_str("#");
+        contents.push_str(_offset.to_string().as_str());
+        std::fs::write(&self.logging_path, contents);
+
         let _ino = translate_inode(_orig_ino);
 
         let mut block_info = self.get_inode(_ino).unwrap();
