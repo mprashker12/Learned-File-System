@@ -21,15 +21,19 @@ fn main() {
         exit(1);
     }
 
+
     let image_name = args.get(2).unwrap();
+
     let image = OpenOptions::new().read(true).write(true).open(image_name).unwrap();
     let block_device = BlockFileWrapper::new(BLOCK_SIZE, image);
 
     let mountpoint = args.get(3).unwrap();
 
+    let logging_path = args.get(4).unwrap();
+
     env_logger::init();
 
-    let l = LearnedFileSystem::new(block_device);
+    let l = LearnedFileSystem::new(block_device, logging_path.clone());
     let options = ["-o", "fsname=hello", "defaultpermissions", "auto_unmount"]
         .iter()
         .map(|o| o.as_ref())

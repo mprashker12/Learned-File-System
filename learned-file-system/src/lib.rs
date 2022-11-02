@@ -32,6 +32,7 @@ pub struct LearnedFileSystem <BF : BlockFile> {
     block_allocation_bitmask: BitMaskBlock,
     super_block_index: usize,
     bit_mask_block_index: usize,
+    logging_path: String,
 }
 
 fn translate_error(e : ErrorKind) -> c_int{
@@ -51,7 +52,7 @@ fn translate_inode(ino: u64) -> u64{
 }
 
 impl <BF: BlockFile>  LearnedFileSystem<BF> {
-    pub fn new(block_system: BF) -> Self {
+    pub fn new(block_system: BF, logging_path: String) -> Self {
         let block_allocation_bitmask = BitMaskBlock::default();
 
         LearnedFileSystem {
@@ -59,6 +60,7 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
             block_allocation_bitmask,
             super_block_index: 0,
             bit_mask_block_index: 1,
+            logging_path,
         }
     }
 
@@ -297,7 +299,7 @@ impl <BF: BlockFile>  LearnedFileSystem<BF> {
 //Main Implementations of the File System for LearnedFileSystem
 
 impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
-    
+
     fn init(&mut self, _req: &fuse::Request) -> Result<(), c_int> {
         let super_block = self.get_superblock().map_err(|e| translate_error(e.kind()))?;
         if super_block.magic != FS_MAGIC_NUM {return Err(-1)};
@@ -531,6 +533,15 @@ impl <BF : BlockFile> Filesystem for LearnedFileSystem<BF> {
     }
 
     fn read(&mut self, _req: &Request, _orig_ino: u64, _fh: u64, _offset: i64, _size: u32, reply: ReplyData) {
+
+        //logging
+        let mut contents = String::from("R");
+        contents.push_str(_orig_ino.to_string().as_str());
+        contents.push_str("#");
+        contents.push_str(_offset.to_string().as_str());
+        std::fs::write(&self.logging_path, contents);
+
+
         let _ino = translate_inode(_orig_ino);
         let block_info = self.get_inode(_ino).unwrap();
         let data = self.read_file_bytes(&block_info, _offset as usize, _size as usize);
